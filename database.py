@@ -386,72 +386,72 @@ class Database:
         for attempt in range(max_retries):
             try:
                 with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # OPTYMALIZACJA: Używamy dokładnego dopasowania zamiast LIKE dla lepszej wydajności
-            # Najpierw próbujemy dokładnego dopasowania
-            exact_match = item_name.strip()
-            
-            # OPTYMALIZACJA: Pobieramy tylko unikalne snapshots dla danego przedmiotu i serwera
-            # Używamy dokładnego dopasowania (szybsze niż LIKE)
-            snapshot_query = """
-                SELECT DISTINCT s.timestamp, s.id
-                FROM snapshots s
-                INNER JOIN offers o ON s.id = o.snapshot_id
-                WHERE o.item_name = ?
-                AND o.server_id = ?
-                AND o.price_in_won > 0
-            """
-            snapshot_params = [exact_match, server_id]
-            
-            # Dodajemy filtr daty jeśli podano
-            if days:
-                from datetime import datetime, timedelta
-                cutoff_date = datetime.now() - timedelta(days=days)
-                cutoff_timestamp = cutoff_date.isoformat()
-                snapshot_query += " AND s.timestamp >= ?"
-                snapshot_params.append(cutoff_timestamp)
-            
-            snapshot_query += " ORDER BY s.timestamp DESC"
-            
-            # Dodajemy limit jeśli podano (limitujemy liczbę snapshotów)
-            if limit:
-                # Limit snapshotów - mniej danych do przetworzenia
-                max_snapshots = min(limit // 10, 500) if limit else 500  # ~10 ofert na snapshot
-                snapshot_query += " LIMIT ?"
-                snapshot_params.append(max_snapshots if max_snapshots > 0 else 500)
-            else:
-                # Domyślnie limit 500 snapshotów dla wydajności
-                snapshot_query += " LIMIT ?"
-                snapshot_params.append(500)
-            
-            cursor.execute(snapshot_query, snapshot_params)
-            snapshots = cursor.fetchall()
-            
-            if not snapshots:
-                return []
-            
-            # Pobieramy oferty tylko dla wybranych snapshotów
-            snapshot_ids = [s['id'] for s in snapshots]
-            placeholders = ','.join(['?'] * len(snapshot_ids))
-            
-            query = f"""
-                SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
-                FROM offers o
-                INNER JOIN snapshots s ON o.snapshot_id = s.id
-                WHERE o.snapshot_id IN ({placeholders})
-                AND o.item_name = ?
-                AND o.server_id = ?
-                AND o.price_in_won > 0
-                ORDER BY s.timestamp ASC, o.id ASC
-            """
-            params = snapshot_ids + [exact_match, server_id]
-            
-            # Dodajemy limit na oferty jeśli podano
-            if limit:
-                query += " LIMIT ?"
-                params.append(limit)
-            
+                    cursor = conn.cursor()
+                    
+                    # OPTYMALIZACJA: Używamy dokładnego dopasowania zamiast LIKE dla lepszej wydajności
+                    # Najpierw próbujemy dokładnego dopasowania
+                    exact_match = item_name.strip()
+                    
+                    # OPTYMALIZACJA: Pobieramy tylko unikalne snapshots dla danego przedmiotu i serwera
+                    # Używamy dokładnego dopasowania (szybsze niż LIKE)
+                    snapshot_query = """
+                        SELECT DISTINCT s.timestamp, s.id
+                        FROM snapshots s
+                        INNER JOIN offers o ON s.id = o.snapshot_id
+                        WHERE o.item_name = ?
+                        AND o.server_id = ?
+                        AND o.price_in_won > 0
+                    """
+                    snapshot_params = [exact_match, server_id]
+                    
+                    # Dodajemy filtr daty jeśli podano
+                    if days:
+                        from datetime import timedelta
+                        cutoff_date = datetime.now() - timedelta(days=days)
+                        cutoff_timestamp = cutoff_date.isoformat()
+                        snapshot_query += " AND s.timestamp >= ?"
+                        snapshot_params.append(cutoff_timestamp)
+                    
+                    snapshot_query += " ORDER BY s.timestamp DESC"
+                    
+                    # Dodajemy limit jeśli podano (limitujemy liczbę snapshotów)
+                    if limit:
+                        # Limit snapshotów - mniej danych do przetworzenia
+                        max_snapshots = min(limit // 10, 500) if limit else 500  # ~10 ofert na snapshot
+                        snapshot_query += " LIMIT ?"
+                        snapshot_params.append(max_snapshots if max_snapshots > 0 else 500)
+                    else:
+                        # Domyślnie limit 500 snapshotów dla wydajności
+                        snapshot_query += " LIMIT ?"
+                        snapshot_params.append(500)
+                    
+                    cursor.execute(snapshot_query, snapshot_params)
+                    snapshots = cursor.fetchall()
+                    
+                    if not snapshots:
+                        return []
+                    
+                    # Pobieramy oferty tylko dla wybranych snapshotów
+                    snapshot_ids = [s['id'] for s in snapshots]
+                    placeholders = ','.join(['?'] * len(snapshot_ids))
+                    
+                    query = f"""
+                        SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
+                        FROM offers o
+                        INNER JOIN snapshots s ON o.snapshot_id = s.id
+                        WHERE o.snapshot_id IN ({placeholders})
+                        AND o.item_name = ?
+                        AND o.server_id = ?
+                        AND o.price_in_won > 0
+                        ORDER BY s.timestamp ASC, o.id ASC
+                    """
+                    params = snapshot_ids + [exact_match, server_id]
+                    
+                    # Dodajemy limit na oferty jeśli podano
+                    if limit:
+                        query += " LIMIT ?"
+                        params.append(limit)
+                    
                     cursor.execute(query, params)
                     rows = cursor.fetchall()
                     result = [dict(row) for row in rows]
@@ -588,18 +588,6 @@ class Database:
                 return [], 0
         
         return [], 0
-                    
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    logger.warning(f"Database locked podczas odczytu, próba {attempt + 1}/{max_retries}, czekam {retry_delay}s...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-                else:
-                    logger.error(f"Błąd podczas pobierania najnowszych danych: {e}", exc_info=True)
-                    return [], 0
-            except Exception as e:
-                logger.error(f"Nieoczekiwany błąd podczas pobierania najnowszych danych: {e}", exc_info=True)
-                return [], 0
         
         return [], 0
     
