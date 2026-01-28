@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 import os
+import time
 from contextlib import contextmanager
 
 logging.basicConfig(level=logging.INFO)
@@ -214,8 +215,24 @@ class Database:
     @contextmanager
     def _get_connection(self):
         """Context manager dla połączenia z bazą danych"""
-        conn = sqlite3.connect(self.db_path)
+        # Używamy timeout i WAL mode dla lepszej obsługi równoległych operacji
+        conn = sqlite3.connect(self.db_path, timeout=30.0)  # 30 sekund timeout
         conn.row_factory = sqlite3.Row  # Umożliwia dostęp przez nazwy kolumn
+        
+        # Włączamy WAL mode (Write-Ahead Logging) dla lepszej obsługi równoległych operacji
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except Exception as e:
+            logger.warning(f"Nie udało się włączyć WAL mode: {e}")
+        
+        # Optymalizacje dla wydajności
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL")  # Szybsze niż FULL, bezpieczniejsze niż OFF
+            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            conn.execute("PRAGMA temp_store=MEMORY")  # Tymczasowe dane w pamięci
+        except Exception as e:
+            logger.warning(f"Nie udało się ustawić PRAGMA: {e}")
+        
         try:
             yield conn
         finally:
@@ -232,80 +249,110 @@ class Database:
         timestamp = datetime.now().isoformat()
         added_count = 0
         
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Tworzymy snapshot (lub pobieramy istniejący jeśli już jest dla tego serwera)
-            cursor.execute("""
-                INSERT OR IGNORE INTO snapshots (server_id, timestamp) VALUES (?, ?)
-            """, (server_id, timestamp))
-            snapshot_id = cursor.lastrowid
-            
-            # Jeśli snapshot już istniał, pobieramy jego ID
-            if snapshot_id == 0:
-                cursor.execute("SELECT id FROM snapshots WHERE server_id = ? AND timestamp = ?", (server_id, timestamp))
-                result = cursor.fetchone()
-                if result:
-                    snapshot_id = result['id']
+        # Używamy retry logic dla operacji na bazie (obsługa "database is locked")
+        max_retries = 5
+        retry_delay = 0.1
+        
+        for attempt in range(max_retries):
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Tworzymy snapshot (lub pobieramy istniejący jeśli już jest dla tego serwera)
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO snapshots (server_id, timestamp) VALUES (?, ?)
+                    """, (server_id, timestamp))
+                    snapshot_id = cursor.lastrowid
+                    
+                    # Jeśli snapshot już istniał, pobieramy jego ID
+                    if snapshot_id == 0:
+                        cursor.execute("SELECT id FROM snapshots WHERE server_id = ? AND timestamp = ?", (server_id, timestamp))
+                        result = cursor.fetchone()
+                        if result:
+                            snapshot_id = result['id']
+                        else:
+                            logger.error("Nie udało się utworzyć/pobrać snapshot")
+                            return
+                    
+                    # Przygotowujemy wszystkie dane do wstawienia (batch insert dla wydajności)
+                    offers_data = []
+                    history_data = []
+                    
+                    for item in items:
+                        # Próbujemy wyciągnąć cenę (yang lub won)
+                        price = None
+                        currency = None
+                        
+                        yang = item.get('yang', '').replace(',', '').replace('.', '').strip()
+                        won = item.get('won', '').replace(',', '').replace('.', '').strip()
+                        
+                        # Priorytet: won, potem yang
+                        if won and won.isdigit() and int(won) > 0:
+                            price = int(won)
+                            currency = 'won'
+                        elif yang and yang.isdigit() and int(yang) > 0:
+                            price = int(yang)
+                            currency = 'yang'
+                        
+                        if price is not None and price > 0:
+                            # Normalizujemy cenę do won (1 won = 100000000 yang)
+                            YANG_TO_WON = 100000000
+                            price_in_won = (price / YANG_TO_WON) if currency == 'yang' else price
+                            
+                            # Przygotowujemy dane do batch insert
+                            offers_data.append((
+                                snapshot_id,
+                                server_id,
+                                item.get('name', 'Unknown'),
+                                price,
+                                price_in_won,
+                                currency,
+                                item.get('quantity', ''),
+                                item.get('seller', '')
+                            ))
+                            
+                            # Dla kompatybilności wstecznej
+                            history_data.append((
+                                timestamp,
+                                item.get('name', 'Unknown'),
+                                price,
+                                price_in_won,
+                                currency,
+                                item.get('quantity', ''),
+                                item.get('seller', '')
+                            ))
+                    
+                    # Batch insert dla offers (znacznie szybsze niż pojedyncze INSERT)
+                    if offers_data:
+                        cursor.executemany("""
+                            INSERT INTO offers 
+                            (snapshot_id, server_id, item_name, price, price_in_won, currency, quantity, seller)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, offers_data)
+                        added_count = len(offers_data)
+                    
+                    # Batch insert dla price_history (kompatybilność wsteczna)
+                    if history_data:
+                        cursor.executemany("""
+                            INSERT INTO price_history 
+                            (timestamp, item_name, price, price_in_won, currency, quantity, seller)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, history_data)
+                    
+                    conn.commit()
+                    break  # Sukces - wychodzimy z pętli retry
+                    
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Database locked, próba {attempt + 1}/{max_retries}, czekam {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
                 else:
-                    logger.error("Nie udało się utworzyć/pobrać snapshot")
-                    return
-            
-            # Dodajemy oferty do tego snapshot
-            for item in items:
-                # Próbujemy wyciągnąć cenę (yang lub won)
-                price = None
-                currency = None
-                
-                yang = item.get('yang', '').replace(',', '').replace('.', '').strip()
-                won = item.get('won', '').replace(',', '').replace('.', '').strip()
-                
-                # Priorytet: won, potem yang
-                if won and won.isdigit() and int(won) > 0:
-                    price = int(won)
-                    currency = 'won'
-                elif yang and yang.isdigit() and int(yang) > 0:
-                    price = int(yang)
-                    currency = 'yang'
-                
-                if price is not None and price > 0:
-                    # Normalizujemy cenę do won (1 won = 100000000 yang)
-                    YANG_TO_WON = 100000000
-                    price_in_won = (price / YANG_TO_WON) if currency == 'yang' else price
-                    
-                    # Dodajemy do nowej struktury (offers)
-                    cursor.execute("""
-                        INSERT INTO offers 
-                        (snapshot_id, server_id, item_name, price, price_in_won, currency, quantity, seller)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        snapshot_id,
-                        server_id,
-                        item.get('name', 'Unknown'),
-                        price,
-                        price_in_won,
-                        currency,
-                        item.get('quantity', ''),
-                        item.get('seller', '')
-                    ))
-                    added_count += 1
-                    
-                    # Dla kompatybilności wstecznej - również do starej tabeli
-                    cursor.execute("""
-                        INSERT INTO price_history 
-                        (timestamp, item_name, price, price_in_won, currency, quantity, seller)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        timestamp,
-                        item.get('name', 'Unknown'),
-                        price,
-                        price_in_won,
-                        currency,
-                        item.get('quantity', ''),
-                        item.get('seller', '')
-                    ))
-            
-            conn.commit()
+                    logger.error(f"Błąd podczas dodawania danych do bazy: {e}", exc_info=True)
+                    raise
+            except Exception as e:
+                logger.error(f"Nieoczekiwany błąd podczas dodawania danych: {e}", exc_info=True)
+                raise
         
         logger.info(f"Dodano {added_count} ofert do snapshotu {timestamp}")
     
@@ -332,7 +379,13 @@ class Database:
             limit: Maksymalna liczba wpisów do zwrócenia (None = wszystkie)
             days: Liczba ostatnich dni do pobrania (None = wszystkie)
         """
-        with self._get_connection() as conn:
+        # Retry logic dla operacji odczytu
+        max_retries = 3
+        retry_delay = 0.05
+        
+        for attempt in range(max_retries):
+            try:
+                with self._get_connection() as conn:
             cursor = conn.cursor()
             
             # OPTYMALIZACJA: Używamy dokładnego dopasowania zamiast LIKE dla lepszej wydajności
@@ -399,11 +452,25 @@ class Database:
                 query += " LIMIT ?"
                 params.append(limit)
             
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            result = [dict(row) for row in rows]
-            
-            return result
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall()
+                    result = [dict(row) for row in rows]
+                    
+                    return result
+                    
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Database locked podczas odczytu historii, próba {attempt + 1}/{max_retries}, czekam {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error(f"Błąd podczas pobierania historii przedmiotu: {e}", exc_info=True)
+                    return []
+            except Exception as e:
+                logger.error(f"Nieoczekiwany błąd podczas pobierania historii: {e}", exc_info=True)
+                return []
+        
+        return []
     
     def get_latest_data(self, server_id: int) -> tuple[List[Dict], int]:
         """
@@ -415,92 +482,126 @@ class Database:
         Returns:
             Tuple: (lista najnowszych wpisów po przedmiocie, łączna ilość dostępnych sztuk)
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # OPTYMALIZACJA: Pobieramy najnowszy snapshot dla danego serwera
-            cursor.execute("SELECT id, timestamp FROM snapshots WHERE server_id = ? ORDER BY timestamp DESC LIMIT 1", (server_id,))
-            snapshot_result = cursor.fetchone()
-            
-            if not snapshot_result:
+        # Retry logic dla operacji odczytu
+        max_retries = 3
+        retry_delay = 0.05
+        
+        for attempt in range(max_retries):
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # OPTYMALIZACJA: Pobieramy najnowszy snapshot dla danego serwera
+                    cursor.execute("SELECT id, timestamp FROM snapshots WHERE server_id = ? ORDER BY timestamp DESC LIMIT 1", (server_id,))
+                    snapshot_result = cursor.fetchone()
+                    
+                    if not snapshot_result:
+                        return [], 0
+                    
+                    snapshot_id = snapshot_result['id']
+                    latest_timestamp = snapshot_result['timestamp']
+                    
+                    # Pobieramy wszystkie oferty z najnowszego snapshot dla danego serwera
+                    cursor.execute("""
+                        SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
+                        FROM offers o
+                        INNER JOIN snapshots s ON o.snapshot_id = s.id
+                        WHERE o.snapshot_id = ? AND o.server_id = ? AND o.price_in_won > 0
+                    """, (snapshot_id, server_id))
+                    
+                    latest_offers = [dict(row) for row in cursor.fetchall()]
+                    
+                    # Obliczamy łączną ilość dostępnych sztuk
+                    total_quantity = 0
+                    
+                    # Grupujemy oferty po nazwie przedmiotu i obliczamy statystyki (min/max/avg) per sztukę
+                    offers_by_item = {}
+                    for offer in latest_offers:
+                        item_name = offer.get('item_name', 'Unknown')
+                        if item_name not in offers_by_item:
+                            offers_by_item[item_name] = []
+                        
+                        # Obliczamy cenę per sztukę
+                        price_in_won = float(offer.get('price_in_won', 0))
+                        quantity_str = str(offer.get('quantity', '1')).strip()
+                        quantity_clean = ''.join(c for c in quantity_str if c.isdigit())
+                        quantity = int(quantity_clean) if quantity_clean else 1
+                        if quantity <= 0:
+                            quantity = 1
+                        
+                        if price_in_won > 0 and quantity > 0:
+                            price_per_unit = price_in_won / quantity
+                            offers_by_item[item_name].append({
+                                'price_per_unit': price_per_unit,
+                                'price_in_won': price_in_won,
+                                'quantity': quantity,
+                                'offer': offer  # Zachowujemy oryginalną ofertę dla innych danych
+                            })
+                            total_quantity += quantity
+                    
+                    # Tworzymy agregowane dane dla każdego przedmiotu (używamy minimalnej ceny per sztukę)
+                    latest_data = []
+                    for item_name, offers in offers_by_item.items():
+                        if not offers:
+                            continue
+                        
+                        # Obliczamy min/max/avg cen per sztukę
+                        prices_per_unit = [o['price_per_unit'] for o in offers]
+                        min_price_per_unit = min(prices_per_unit)
+                        max_price_per_unit = max(prices_per_unit)
+                        avg_price_per_unit = sum(prices_per_unit) / len(prices_per_unit)
+                        
+                        # Używamy oferty z minimalną ceną per sztukę jako reprezentatywnej
+                        min_offer = min(offers, key=lambda x: x['price_per_unit'])
+                        representative_offer = min_offer['offer']
+                        
+                        # Tworzymy agregowany wpis używając oferty z minimalną ceną per sztukę
+                        # price_in_won pozostaje ceną za całą ofertę (dla spójności z resztą kodu)
+                        latest_data.append({
+                            'item_name': item_name,
+                            'timestamp': representative_offer.get('timestamp'),
+                            'price': representative_offer.get('price'),
+                            'price_in_won': representative_offer.get('price_in_won'),  # Cena za całą ofertę
+                            'currency': representative_offer.get('currency'),
+                            'quantity': representative_offer.get('quantity'),
+                            'seller': representative_offer.get('seller'),
+                            # Dodatkowe statystyki (opcjonalnie, dla przyszłego użycia)
+                            'min_price_per_unit': min_price_per_unit,
+                            'max_price_per_unit': max_price_per_unit,
+                            'avg_price_per_unit': avg_price_per_unit
+                        })
+                    
+                    latest_data.sort(key=lambda x: x.get('item_name', ''))
+                    
+                    return latest_data, total_quantity
+                    
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Database locked podczas odczytu, próba {attempt + 1}/{max_retries}, czekam {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error(f"Błąd podczas pobierania najnowszych danych: {e}", exc_info=True)
+                    return [], 0
+            except Exception as e:
+                logger.error(f"Nieoczekiwany błąd podczas pobierania najnowszych danych: {e}", exc_info=True)
                 return [], 0
-            
-            snapshot_id = snapshot_result['id']
-            latest_timestamp = snapshot_result['timestamp']
-            
-            # Pobieramy wszystkie oferty z najnowszego snapshot dla danego serwera
-            cursor.execute("""
-                SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
-                FROM offers o
-                INNER JOIN snapshots s ON o.snapshot_id = s.id
-                WHERE o.snapshot_id = ? AND o.server_id = ? AND o.price_in_won > 0
-            """, (snapshot_id, server_id))
-            
-            latest_offers = [dict(row) for row in cursor.fetchall()]
-            
-            # Obliczamy łączną ilość dostępnych sztuk
-            total_quantity = 0
-            
-            # Grupujemy oferty po nazwie przedmiotu i obliczamy statystyki (min/max/avg) per sztukę
-            offers_by_item = {}
-            for offer in latest_offers:
-                item_name = offer.get('item_name', 'Unknown')
-                if item_name not in offers_by_item:
-                    offers_by_item[item_name] = []
-                
-                # Obliczamy cenę per sztukę
-                price_in_won = float(offer.get('price_in_won', 0))
-                quantity_str = str(offer.get('quantity', '1')).strip()
-                quantity_clean = ''.join(c for c in quantity_str if c.isdigit())
-                quantity = int(quantity_clean) if quantity_clean else 1
-                if quantity <= 0:
-                    quantity = 1
-                
-                if price_in_won > 0 and quantity > 0:
-                    price_per_unit = price_in_won / quantity
-                    offers_by_item[item_name].append({
-                        'price_per_unit': price_per_unit,
-                        'price_in_won': price_in_won,
-                        'quantity': quantity,
-                        'offer': offer  # Zachowujemy oryginalną ofertę dla innych danych
-                    })
-                    total_quantity += quantity
-            
-            # Tworzymy agregowane dane dla każdego przedmiotu (używamy minimalnej ceny per sztukę)
-            latest_data = []
-            for item_name, offers in offers_by_item.items():
-                if not offers:
-                    continue
-                
-                # Obliczamy min/max/avg cen per sztukę
-                prices_per_unit = [o['price_per_unit'] for o in offers]
-                min_price_per_unit = min(prices_per_unit)
-                max_price_per_unit = max(prices_per_unit)
-                avg_price_per_unit = sum(prices_per_unit) / len(prices_per_unit)
-                
-                # Używamy oferty z minimalną ceną per sztukę jako reprezentatywnej
-                min_offer = min(offers, key=lambda x: x['price_per_unit'])
-                representative_offer = min_offer['offer']
-                
-                # Tworzymy agregowany wpis używając oferty z minimalną ceną per sztukę
-                # price_in_won pozostaje ceną za całą ofertę (dla spójności z resztą kodu)
-                latest_data.append({
-                    'item_name': item_name,
-                    'timestamp': representative_offer.get('timestamp'),
-                    'price': representative_offer.get('price'),
-                    'price_in_won': representative_offer.get('price_in_won'),  # Cena za całą ofertę
-                    'currency': representative_offer.get('currency'),
-                    'quantity': representative_offer.get('quantity'),
-                    'seller': representative_offer.get('seller'),
-                    # Dodatkowe statystyki (opcjonalnie, dla przyszłego użycia)
-                    'min_price_per_unit': min_price_per_unit,
-                    'max_price_per_unit': max_price_per_unit,
-                    'avg_price_per_unit': avg_price_per_unit
-                })
-            
-            latest_data.sort(key=lambda x: x.get('item_name', ''))
-            
-            return latest_data, total_quantity
+        
+        return [], 0
+                    
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Database locked podczas odczytu, próba {attempt + 1}/{max_retries}, czekam {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error(f"Błąd podczas pobierania najnowszych danych: {e}", exc_info=True)
+                    return [], 0
+            except Exception as e:
+                logger.error(f"Nieoczekiwany błąd podczas pobierania najnowszych danych: {e}", exc_info=True)
+                return [], 0
+        
+        return [], 0
     
     def get_unique_items(self, server_id: int) -> List[str]:
         """
