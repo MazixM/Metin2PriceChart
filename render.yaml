@@ -7,4 +7,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: DATABASE_PATH
+        value: /tmp/price_history.db
     healthCheckPath: /
+    # Uwaga: SQLite na Render używa ephemeral filesystem
+    # Baza danych będzie resetowana przy każdym restarcie
+    # Dla produkcji rozważ użycie PostgreSQL (Render oferuje darmowy PostgreSQL)

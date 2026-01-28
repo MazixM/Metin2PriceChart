@@ -30,8 +30,12 @@ def data_update_worker():
     
     logger.info("Uruchamianie background service do aktualizacji danych")
     
-    fetcher = Metin2DataFetcher(config.STORE_URL)
-    chart_manager = ChartManager()
+    # Używamy globalnych instancji utworzonych w main()
+    # Jeśli nie istnieją, tworzymy nowe (fallback)
+    if fetcher is None:
+        fetcher = Metin2DataFetcher(config.STORE_URL)
+    if chart_manager is None:
+        chart_manager = ChartManager()
     
     # Ustawiamy chart_manager w app.py, jeśli już został zaimportowany
     try:
@@ -106,6 +110,33 @@ def main():
     """Główna funkcja aplikacji - uruchamia web interface i background service"""
     logger.info("Uruchamianie aplikacji Metin2 Price Chart")
     
+    # Inicjalizujemy fetcher i chart_manager przed uruchomieniem worker thread
+    global fetcher, chart_manager
+    fetcher = Metin2DataFetcher(config.STORE_URL)
+    chart_manager = ChartManager()
+    
+    # Pobieramy dane przy starcie (przed uruchomieniem Flask) - ważne dla Render
+    logger.info("Pobieranie początkowych danych przy starcie...")
+    servers = getattr(config, 'AVAILABLE_SERVERS', {config.DEFAULT_SERVER_ID: 'Default'})
+    
+    for server_id, server_name in servers.items():
+        logger.info(f"Pobieranie początkowych danych dla serwera {server_id} ({server_name})...")
+        try:
+            items = fetcher.fetch_upgrade_items(
+                server_name=None,
+                item_names=None,
+                server_id=server_id
+            )
+            if items:
+                logger.info(f"Pobrano {len(items)} przedmiotów dla serwera {server_id} przy starcie")
+                chart_manager.add_price_data(items, server_id)
+            else:
+                logger.warning(f"Nie pobrano danych dla serwera {server_id} przy starcie")
+        except Exception as e:
+            logger.error(f"Błąd podczas pobierania początkowych danych dla serwera {server_id}: {e}", exc_info=True)
+    
+    logger.info("Początkowe dane pobrane. Uruchamianie background service...")
+    
     # Uruchamiamy background service w osobnym wątku
     worker_thread = threading.Thread(target=data_update_worker, daemon=True)
     worker_thread.start()
@@ -114,7 +145,7 @@ def main():
     logger.info("Uruchamianie web interface...")
     
     # Czekamy chwilę, aby chart_manager został zainicjalizowany
-    time.sleep(2)
+    time.sleep(1)
     
     # Importujemy i uruchamiamy Flask app
     try:

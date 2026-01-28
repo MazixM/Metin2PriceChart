@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 class Database:
     """Klasa do zarządzania bazą danych SQLite"""
     
-    def __init__(self, db_path: str = "price_history.db"):
+    def __init__(self, db_path: str = None):
+        # Używamy zmiennej środowiskowej lub domyślnej ścieżki
+        if db_path is None:
+            db_path = os.environ.get('DATABASE_PATH', 'price_history.db')
         self.db_path = db_path
         self._init_database()
     

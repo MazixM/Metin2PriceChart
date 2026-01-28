@@ -481,9 +481,9 @@
                             `Ostatnia aktualizacja: ${new Date(data.last_update).toLocaleString('pl-PL')}`;
                     }
                 } else {
-                    const message = data.message || 'Brak danych. Poczekaj na pierwszą aktualizację.';
+                    const message = data.message || 'Brak danych. Poczekaj na pierwszą aktualizację (może potrwać do 5 minut).';
                     document.getElementById('itemsContainer').innerHTML = 
-                        `<div class="no-data">${message}</div>`;
+                        `<div class="no-data">${message}<br><small>Worker pobiera dane co 5 minut dla wszystkich serwerów.</small></div>`;
                 }
             } catch (error) {
                 console.error('Błąd ładowania danych:', error);
