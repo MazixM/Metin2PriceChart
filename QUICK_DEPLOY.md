@@ -17,12 +17,13 @@ git push -u origin main
 3. Kliknij "New +" → "Blueprint"
 4. Wybierz repozytorium
 5. Render automatycznie wykryje `render.yaml` i utworzy:
-   - Web Service (główna aplikacja)
-   - Background Worker (aktualizacja danych)
+   - Web Service (główna aplikacja + background worker w tle)
 
 **Gotowe!** 🎉
 
 Aplikacja będzie dostępna pod adresem: `https://metin2-price-chart.onrender.com`
+
+**Uwaga:** Background worker działa w tym samym procesie co web service (w osobnym wątku), więc nie potrzebujesz osobnego worker service.
 
 ---
 
@@ -33,9 +34,7 @@ Aplikacja będzie dostępna pod adresem: `https://metin2-price-chart.onrender.co
 3. Wybierz repozytorium
 4. Railway automatycznie wykryje Python i uruchomi aplikację
 
-**Dla Background Worker:**
-- W ustawieniach projektu → "New" → "Empty Service"
-- Start Command: `python -c "from main import data_update_worker; data_update_worker()"`
+**Uwaga:** Background worker działa automatycznie w tle w tym samym procesie co web service (nie potrzebujesz osobnego worker service).
 
 ---
 

@@ -35,22 +35,14 @@
      - **Start Command:** `python main.py`
      - **Plan:** Free
 
-4. **Utwórz Background Worker:**
-   - Kliknij "New +" → "Background Worker"
-   - Wybierz to samo repozytorium
-   - Ustawienia:
-     - **Name:** `metin2-price-chart-worker`
-     - **Environment:** `Python 3`
-     - **Build Command:** `pip install -r requirements.txt`
-     - **Start Command:** `python -c "from main import data_update_worker; data_update_worker()"`
-     - **Plan:** Free
-
-5. **Konfiguracja zmiennych środowiskowych (opcjonalnie):**
+4. **Konfiguracja zmiennych środowiskowych (opcjonalnie):**
    - W ustawieniach Web Service dodaj:
      - `PORT=5001` (Render automatycznie ustawia PORT, ale możemy to nadpisać)
 
+**Uwaga:** Background worker działa automatycznie w tle w tym samym procesie co web service (w osobnym wątku). Nie potrzebujesz osobnego worker service - wszystko działa w jednym web service!
+
 **Alternatywnie - użyj render.yaml:**
-- Render automatycznie wykryje plik `render.yaml` i utworzy oba serwisy
+- Render automatycznie wykryje plik `render.yaml` i utworzy web service z workerem w tle
 
 ### 2. Railway
 
