@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metin2 Price Chart - Monitor Cen</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .search-section {
+            margin-bottom: 30px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .search-box {
+            flex: 1;
+            min-width: 300px;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        .search-box:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        
+        .btn:hover {
+            background: #5568d3;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .items-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        .item-card {
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .item-card:hover {
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+        }
+        
+        .item-card.selected {
+            border-color: #667eea;
+            background: #e7f0ff;
+        }
+        
+        .item-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        
+        .item-price {
+            color: #667eea;
+            font-size: 18px;
+        }
+        
+        .item-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .chart-container {
+            margin-top: 30px;
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #e9ecef;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .chart-wrapper {
+            flex: 1;
+            min-width: 600px;
+        }
+        
+        .stats-panel {
+            min-width: 300px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .stats-panel h3 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            color: #333;
+            font-size: 18px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+        
+        .stat-label-panel {
+            font-weight: 600;
+            color: #666;
+        }
+        
+        .stat-value-panel {
+            font-weight: bold;
+            color: #667eea;
+            text-align: right;
+        }
+        
+        .stat-group {
+            margin-bottom: 20px;
+        }
+        
+        .stat-group-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+            font-style: italic;
+        }
+        
+        .stats-bar {
+            display: flex;
+            justify-content: space-around;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 20px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .last-update {
+            text-align: center;
+            color: #999;
+            font-size: 14px;
+            margin-top: 20px;
+        }
+        
+        .price-type-selector {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .price-type-btn {
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+        
+        .price-type-btn.active {
+            background: #5568d3;
+            box-shadow: 0 2px 8px rgba(85, 104, 211, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Metin2 Price Chart</h1>
+        <p class="subtitle">Monitor cen przedmiotów w czasie rzeczywistym</p>
+        
+        <div class="search-section">
+            <input type="text" id="searchInput" class="search-box" placeholder="Wpisz nazwę przedmiotu do wyszukania...">
+            <button class="btn" onclick="searchItems()">Szukaj</button>
+            <button class="btn btn-secondary" onclick="loadAllItems()">Pokaż wszystkie</button>
+        </div>
+        
+        <div class="price-type-selector" id="priceTypeSelector" style="margin-bottom: 20px; text-align: center; display: none;">
+            <label style="margin-right: 10px; font-weight: bold;">Typ ceny:</label>
+            <button id="btnMin" class="btn price-type-btn active" onclick="setPriceType('min')">Minimalna</button>
+            <button id="btnMax" class="btn price-type-btn" onclick="setPriceType('max')">Maksymalna</button>
+            <button id="btnAvg" class="btn price-type-btn" onclick="setPriceType('avg')">Średnia</button>
+        </div>
+        
+        <div style="text-align: center; margin-bottom: 15px; font-size: 12px; color: #666;">
+            <label>
+                <input type="checkbox" id="autoRefreshCheckbox" checked style="margin-right: 5px;">
+                Automatyczne odświeżanie (co 30 sekund)
+            </label>
+            <span id="refreshStatus" style="margin-left: 15px;"></span>
+        </div>
+        
+        <div id="statsBar" class="stats-bar" style="display: none;">
+            <div class="stat-item">
+                <div class="stat-label">Wszystkie przedmioty</div>
+                <div class="stat-value" id="totalItems">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Wybrany przedmiot</div>
+                <div class="stat-value" id="selectedItem">-</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Dostępna ilość</div>
+                <div class="stat-value" id="dataPoints">0</div>
+            </div>
+        </div>
+        
+        <div id="itemsContainer" class="items-grid"></div>
+        
+        <div id="chartContainer" class="chart-container" style="display: none;">
+            <div class="chart-wrapper">
+                <div id="chart"></div>
+            </div>
+            <div id="statsPanel" class="stats-panel" style="display: none;">
+                <h3>Statystyki cen</h3>
+                <div id="statsPanelContent"></div>
+            </div>
+        </div>
+        
+        <div class="last-update" id="lastUpdate"></div>
+    </div>
+    
+    <script>
+        let selectedItem = null;
+        let allItems = [];
+        let currentPriceType = 'min'; // Domyślnie minimalna
+        let autoRefreshInterval = null; // Interwał automatycznego odświeżania
+        
+        // Funkcja formatowania ceny w won do formatu "X,XXw"
+        function formatPriceInWon(priceInWon) {
+            if (priceInWon === null || priceInWon === undefined || isNaN(priceInWon)) {
+                return '-';
+            }
+            const num = parseFloat(priceInWon);
+            if (isNaN(num) || num === 0) {
+                return '-';
+            }
+            return num.toFixed(2).replace('.', ',') + 'w';
+        }
+        
+        // Funkcja ustawiania typu ceny
+        function setPriceType(type) {
+            currentPriceType = type;
+            
+            // Aktualizujemy przyciski
+            document.querySelectorAll('.price-type-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(`btn${type.charAt(0).toUpperCase() + type.slice(1)}`).classList.add('active');
+            
+            // Przeładowujemy historię tylko jeśli przedmiot jest wybrany
+            if (selectedItem) {
+                loadItemHistory(selectedItem);
+            }
+        }
+        
+        // Funkcja do włączania/wyłączania automatycznego odświeżania
+        function setupAutoRefresh() {
+            const checkbox = document.getElementById('autoRefreshCheckbox');
+            const statusSpan = document.getElementById('refreshStatus');
+            
+            // Usuwamy istniejący interwał jeśli jest
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+            
+            // Ustawiamy nowy interwał jeśli checkbox jest zaznaczony
+            if (checkbox.checked) {
+                statusSpan.textContent = 'Aktywne';
+                statusSpan.style.color = '#28a745';
+                
+                autoRefreshInterval = setInterval(() => {
+                    loadAllItems();
+                    // Pokazujemy krótki wskaźnik odświeżania
+                    statusSpan.textContent = 'Odświeżono: ' + new Date().toLocaleTimeString('pl-PL');
+                    setTimeout(() => {
+                        if (checkbox.checked) {
+                            statusSpan.textContent = 'Aktywne';
+                        }
+                    }, 2000);
+                }, 30000); // Co 30 sekund
+            } else {
+                statusSpan.textContent = 'Wyłączone';
+                statusSpan.style.color = '#dc3545';
+            }
+        }
+        
+        // Ładowanie danych przy starcie
+        window.addEventListener('DOMContentLoaded', () => {
+            loadAllItems();
+            
+            // Ustawiamy automatyczne odświeżanie
+            setupAutoRefresh();
+            
+            // Nasłuchujemy zmian checkboxa
+            document.getElementById('autoRefreshCheckbox').addEventListener('change', setupAutoRefresh);
+        });
+        
+        // Wyszukiwanie po Enter
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                searchItems();
+            }
+        });
+        
+        async function loadAllItems() {
+            try {
+                // Jeśli przedmiot jest wybrany, NIE przeładowujemy historii wykresu przy auto-refresh
+                // (historia wykresu jest już załadowana i nie zmienia się tak często)
+                if (selectedItem) {
+                    // Przy auto-refresh tylko aktualizujemy listę przedmiotów, nie wykres
+                    // Wykres ładujemy tylko ręcznie przy wyborze przedmiotu
+                    return;
+                }
+                
+                // Ładujemy tylko najnowsze ceny (bez statystyk - szybciej)
+                const response = await fetch('/api/latest');
+                const data = await response.json();
+                
+                if (data.data && data.data.length > 0) {
+                    displayItems(data.data);
+                    // Używamy total_quantity jeśli dostępne, w przeciwnym razie count
+                    const availableQuantity = data.total_quantity !== undefined ? data.total_quantity : data.data.length;
+                    updateStats(data.data.length, null, availableQuantity);
+                    if (data.last_update) {
+                        document.getElementById('lastUpdate').textContent = 
+                            `Ostatnia aktualizacja: ${new Date(data.last_update).toLocaleString('pl-PL')}`;
+                    }
+                } else {
+                    const message = data.message || 'Brak danych. Poczekaj na pierwszą aktualizację.';
+                    document.getElementById('itemsContainer').innerHTML = 
+                        `<div class="no-data">${message}</div>`;
+                }
+            } catch (error) {
+                console.error('Błąd ładowania danych:', error);
+                if (!selectedItem && !document.getElementById('itemsContainer').querySelector('.item-card')) {
+                    document.getElementById('itemsContainer').innerHTML = 
+                        `<div class="no-data">Błąd ładowania danych: ${error.message}</div>`;
+                }
+            }
+        }
+        
+        async function searchItems() {
+            const query = document.getElementById('searchInput').value.trim();
+            
+            if (!query) {
+                loadAllItems();
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const data = await response.json();
+                
+                if (data.items && data.items.length > 0) {
+                    // Pobieramy najnowsze dane dla wszystkich przedmiotów
+                    const latestResponse = await fetch('/api/latest');
+                    const latestData = await latestResponse.json();
+                    
+                    // Filtrujemy tylko znalezione przedmioty
+                    const itemsData = latestData.data.filter(d => 
+                        data.items.includes(d.item_name)
+                    );
+                    
+                    // Obliczamy łączną ilość dostępnych sztuk dla przefiltrowanych przedmiotów
+                    let totalQuantity = 0;
+                    itemsData.forEach(item => {
+                        const quantityStr = String(item.quantity || '1').trim();
+                        const quantityClean = quantityStr.replace(/\D/g, '');
+                        const quantity = parseInt(quantityClean) || 1;
+                        if (quantity > 0) {
+                            totalQuantity += quantity;
+                        }
+                    });
+                    
+                    displayItems(itemsData);
+                    updateStats(itemsData.length, null, totalQuantity);
+                } else {
+                    document.getElementById('itemsContainer').innerHTML = 
+                        '<div class="no-data">Nie znaleziono przedmiotów pasujących do wyszukiwania.</div>';
+                }
+            } catch (error) {
+                console.error('Błąd wyszukiwania:', error);
+            }
+        }
+        
+        function displayItems(items) {
+            const container = document.getElementById('itemsContainer');
+            container.innerHTML = '';
+            
+            if (!items || items.length === 0) {
+                container.innerHTML = '<div class="no-data">Brak przedmiotów do wyświetlenia</div>';
+                return;
+            }
+            
+            items.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'item-card';
+                card.onclick = () => selectItem(item.item_name);
+                
+                // Używamy price_in_won jeśli dostępne, w przeciwnym razie normalizujemy
+                let priceInWon = item.price_in_won;
+                if (priceInWon === undefined || priceInWon === null) {
+                    if (item.price !== undefined && item.price !== null) {
+                        // Konwersja: jeśli yang, dzielimy przez 100000000
+                        if (item.currency === 'yang') {
+                            priceInWon = item.price / 100000000;
+                        } else {
+                            priceInWon = item.price;
+                        }
+                    } else {
+                        priceInWon = 0;
+                    }
+                }
+                
+                // Konwertujemy na liczbę jeśli to string
+                if (typeof priceInWon === 'string') {
+                    priceInWon = parseFloat(priceInWon) || 0;
+                }
+                
+                // Obliczamy cenę za 1 sztukę (priceInWon to cena za całą ofertę)
+                let quantity = 1;
+                const quantityStr = String(item.quantity || '1').trim();
+                const quantityClean = quantityStr.replace(/\D/g, ''); // Usuwamy wszystko oprócz cyfr
+                quantity = parseInt(quantityClean) || 1;
+                if (quantity <= 0) quantity = 1;
+                
+                // Cena za 1 sztukę
+                const pricePerUnit = priceInWon > 0 ? priceInWon / quantity : 0;
+                // Obliczamy cenę za 200 sztuk z dokładnej wartości pricePerUnit (przed zaokrągleniem)
+                const priceFor200 = pricePerUnit * 200;
+                
+                // Formatujemy z odpowiednią precyzją
+                // Dla ceny per sztukę używamy 2 miejsc po przecinku
+                const formattedPrice = formatPriceInWon(pricePerUnit);
+                // Dla ceny za 200 sztuk używamy 2 miejsc po przecinku (obliczone z dokładnej wartości)
+                const formattedPrice200 = formatPriceInWon(priceFor200);
+                const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString('pl-PL') : '-';
+                
+                card.innerHTML = `
+                    <div class="item-name">${item.item_name || 'Unknown'}</div>
+                    <div class="item-price">${formattedPrice} / szt</div>
+                    <div class="item-info" style="color: #667eea; font-weight: 600;">${formattedPrice200} / 200 szt</div>
+                    <div class="item-info">Ilość: ${item.quantity || '-'}</div>
+                    <div class="item-info">Sprzedawca: ${item.seller || '-'}</div>
+                    <div class="item-info" style="margin-top: 8px; font-size: 11px;">${timestamp}</div>
+                `;
+                
+                container.appendChild(card);
+            });
+        }
+        
+        async function selectItem(itemName) {
+            // Jeśli klikamy na już wybrany przedmiot, nie robimy nic
+            if (selectedItem === itemName) {
+                return;
+            }
+            
+            selectedItem = itemName;
+            
+            // Ukrywamy listę przedmiotów i pokazujemy tylko wykres
+            document.getElementById('itemsContainer').style.display = 'none';
+            
+            // Pokazujemy selektor typu ceny (tylko gdy przedmiot jest wybrany)
+            document.getElementById('priceTypeSelector').style.display = 'block';
+            
+            // Dodajemy przycisk "Powrót do listy"
+            let backButton = document.getElementById('backToListButton');
+            if (!backButton) {
+                backButton = document.createElement('button');
+                backButton.id = 'backToListButton';
+                backButton.className = 'btn btn-secondary';
+                backButton.textContent = '← Powrót do listy';
+                backButton.style.marginBottom = '20px';
+                backButton.onclick = () => {
+                    selectedItem = null;
+                    document.getElementById('itemsContainer').style.display = 'grid';
+                    document.getElementById('priceTypeSelector').style.display = 'none';
+                    document.getElementById('chartContainer').style.display = 'none';
+                    document.getElementById('backToListButton').remove();
+                    loadAllItems();
+                };
+                const container = document.querySelector('.container');
+                const chartContainer = document.getElementById('chartContainer');
+                container.insertBefore(backButton, chartContainer);
+            }
+            backButton.style.display = 'block';
+            
+            // Ładujemy historię z statystykami
+            await loadItemHistory(itemName);
+        }
+        
+        async function loadItemHistory(itemName) {
+            try {
+                // Pokazujemy wskaźnik ładowania
+                const chartContainer = document.getElementById('chartContainer');
+                chartContainer.style.display = 'flex';
+                chartContainer.innerHTML = '<div class="loading">Ładowanie danych...</div>';
+                
+                const response = await fetch(`/api/item/${encodeURIComponent(itemName)}`);
+                const data = await response.json();
+                
+                if (data.history && data.history.length > 0) {
+                    // Używamy statystyk z API lub obliczamy na podstawie wybranego typu
+                    let priceInWon = null;
+                    if (data.statistics) {
+                        if (currentPriceType === 'min') {
+                            priceInWon = data.statistics.min_price;
+                        } else if (currentPriceType === 'max') {
+                            priceInWon = data.statistics.max_price;
+                        } else if (currentPriceType === 'avg') {
+                            priceInWon = data.statistics.avg_price;
+                        }
+                    }
+                    
+                    // Aktualizujemy wykres z historią
+                    displayChart(data.history, itemName, priceInWon, data.statistics);
+                    // Używamy total_quantity jeśli dostępne (z statystyk lub bezpośrednio z odpowiedzi)
+                    const availableQuantity = (data.statistics && data.statistics.total_quantity !== undefined) 
+                        ? data.statistics.total_quantity 
+                        : (data.total_quantity !== undefined ? data.total_quantity : data.history.length);
+                    updateStats(null, itemName, availableQuantity);
+                    
+                    // Informacja o ograniczeniu danych jeśli zastosowano
+                    if (data.limit_applied) {
+                        const info = document.createElement('div');
+                        info.style.cssText = 'text-align: center; color: #666; font-size: 12px; margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;';
+                        info.textContent = `Wyświetlono ${data.history.length} wpisów (ostatnie 30 dni). Statystyki obliczone z pełnej historii.`;
+                        const chartWrapper = document.querySelector('.chart-wrapper');
+                        if (chartWrapper && !chartWrapper.querySelector('.data-limit-info')) {
+                            info.className = 'data-limit-info';
+                            chartWrapper.appendChild(info);
+                        }
+                    }
+                } else {
+                    document.getElementById('chartContainer').style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Błąd ładowania historii:', error);
+            }
+        }
+        
+        // Funkcja agregująca dane w przedziałach czasowych
+        function aggregateDataByTimeInterval(history, intervalMinutes = 5) {
+            if (!history || history.length === 0) return [];
+            
+            // Dla dużych zbiorów danych (powyżej 1000 wpisów) zwiększamy przedział czasowy
+            if (history.length > 1000) {
+                intervalMinutes = 15; // 15 minut dla dużych zbiorów
+            }
+            if (history.length > 5000) {
+                intervalMinutes = 60; // 1 godzina dla bardzo dużych zbiorów
+            }
+            
+            // Konwertujemy wszystkie ceny do won PER SZTUKA i sortujemy
+            const normalizedHistory = history.map(h => {
+                let priceInWon = h.price_in_won;
+                if (!priceInWon) {
+                    if (h.currency === 'yang') {
+                        priceInWon = h.price / 100000000;
+                    } else {
+                        priceInWon = h.price;
+                    }
+                }
+                
+                // WAŻNE: Dzielimy cenę przez quantity (per sztuka)
+                let quantity = 1;
+                const quantityStr = String(h.quantity || '1').trim();
+                const quantityClean = quantityStr.replace(/\D/g, ''); // Usuwamy wszystko oprócz cyfr
+                quantity = parseInt(quantityClean) || 1;
+                if (quantity <= 0) quantity = 1;
+                
+                const pricePerUnit = parseFloat(priceInWon) / quantity;
+                
+                return {
+                    ...h,
+                    price_in_won: pricePerUnit,
+                    date: new Date(h.timestamp)
+                };
+            }).sort((a, b) => a.date - b.date);
+            
+            if (normalizedHistory.length === 0) return [];
+            
+            // Określamy przedział czasowy na podstawie zakresu danych
+            const firstDate = normalizedHistory[0].date;
+            const lastDate = normalizedHistory[normalizedHistory.length - 1].date;
+            const totalMinutes = (lastDate - firstDate) / (1000 * 60);
+            
+            // Dynamicznie dostosowujemy interwał w zależności od ilości danych
+            let interval = intervalMinutes;
+            if (totalMinutes < 60) {
+                // Jeśli dane są z ostatniej godziny, użyj 1 minuty
+                interval = 1;
+            } else if (totalMinutes < 360) {
+                // Jeśli dane są z ostatnich 6 godzin, użyj 5 minut
+                interval = 5;
+            } else if (totalMinutes < 1440) {
+                // Jeśli dane są z ostatniej doby, użyj 15 minut
+                interval = 15;
+            } else {
+                // Jeśli dane są starsze, użyj 1 godziny
+                interval = 60;
+            }
+            
+            // Grupujemy dane po przedziałach czasowych
+            const aggregated = {};
+            normalizedHistory.forEach(entry => {
+                const date = entry.date;
+                // Zaokrąglamy do najbliższego przedziału
+                const intervalMs = interval * 60 * 1000;
+                const roundedTime = new Date(Math.floor(date.getTime() / intervalMs) * intervalMs);
+                const key = roundedTime.toISOString();
+                
+                if (!aggregated[key]) {
+                    aggregated[key] = {
+                        timestamp: roundedTime.toISOString(),
+                        prices: [],
+                        count: 0
+                    };
+                }
+                
+                if (entry.price_in_won > 0) {
+                    aggregated[key].prices.push(entry.price_in_won);
+                    aggregated[key].count++;
+                }
+            });
+            
+            // Obliczamy statystyki dla każdego przedziału
+            const result = Object.keys(aggregated).sort().map(key => {
+                const group = aggregated[key];
+                const prices = group.prices.filter(p => p > 0);
+                
+                if (prices.length === 0) return null;
+                
+                // Używamy wybranego typu ceny do agregacji
+                let price = 0;
+                if (currentPriceType === 'min') {
+                    price = Math.min(...prices);
+                } else if (currentPriceType === 'max') {
+                    price = Math.max(...prices);
+                } else { // avg
+                    price = prices.reduce((a, b) => a + b, 0) / prices.length;
+                }
+                
+                return {
+                    timestamp: group.timestamp,
+                    price: price,
+                    min: Math.min(...prices),
+                    max: Math.max(...prices),
+                    avg: prices.reduce((a, b) => a + b, 0) / prices.length,
+                    count: prices.length
+                };
+            }).filter(item => item !== null);
+            
+            return result;
+        }
+        
+        function displayChart(history, itemName, selectedPrice = null, statistics = null) {
+            const chartContainer = document.getElementById('chartContainer');
+            chartContainer.style.display = 'flex';
+            
+            // Przywracamy strukturę jeśli była zmieniona przez loading
+            if (!chartContainer.querySelector('.chart-wrapper')) {
+                chartContainer.innerHTML = `
+                    <div class="chart-wrapper">
+                        <div id="chart"></div>
+                    </div>
+                    <div id="statsPanel" class="stats-panel" style="display: none;">
+                        <h3>Statystyki cen</h3>
+                        <div id="statsPanelContent"></div>
+                    </div>
+                `;
+            }
+            
+            // Wyświetlamy panel statystyk jeśli dostępne
+            const statsPanel = document.getElementById('statsPanel');
+            const statsPanelContent = document.getElementById('statsPanelContent');
+            if (statistics) {
+                statsPanel.style.display = 'block';
+                displayStatisticsPanel(statistics, statsPanelContent);
+            } else {
+                statsPanel.style.display = 'none';
+            }
+            
+            // NAJPIERW: Obliczamy zakres Y z surowych danych (przed agregacją)
+            // To zapewnia, że nie tracimy różnic podczas agregacji
+            const rawPrices = [];
+            history.forEach(h => {
+                let priceInWon = h.price_in_won;
+                if (!priceInWon) {
+                    if (h.currency === 'yang') {
+                        priceInWon = h.price / 100000000;
+                    } else {
+                        priceInWon = h.price;
+                    }
+                }
+                
+                // Dzielimy przez quantity (per sztuka)
+                let quantity = 1;
+                const quantityStr = String(h.quantity || '1').trim();
+                const quantityClean = quantityStr.replace(/\D/g, '');
+                quantity = parseInt(quantityClean) || 1;
+                if (quantity <= 0) quantity = 1;
+                
+                const pricePerUnit = parseFloat(priceInWon) / quantity;
+                if (pricePerUnit > 0) {
+                    rawPrices.push(pricePerUnit);
+                }
+            });
+            
+            // Agregujemy dane w przedziałach czasowych
+            const aggregatedData = aggregateDataByTimeInterval(history);
+            
+            if (aggregatedData.length === 0) {
+                const chartWrapper = document.querySelector('.chart-wrapper');
+                if (chartWrapper) {
+                    chartWrapper.innerHTML = '<div class="no-data">Brak danych do wyświetlenia</div>';
+                }
+                return;
+            }
+            
+            // Obliczamy zakres cen dla automatycznego skalowania osi Y
+            // Używamy TYLKO wartości z głównej linii wykresu (agregowanej) - to są wartości faktycznie wyświetlane
+            const aggregatedPrices = aggregatedData.map(d => d.price).filter(p => p > 0);
+            
+            if (aggregatedPrices.length === 0) {
+                return;
+            }
+            
+            // Sortujemy wartości głównej linii
+            const sortedPrices = [...aggregatedPrices].sort((a, b) => a - b);
+            
+            // Używamy mediany i IQR (Interquartile Range) do odfiltrowania outliers
+            const q1Index = Math.floor(sortedPrices.length * 0.25);
+            const q3Index = Math.floor(sortedPrices.length * 0.75);
+            const q1 = sortedPrices[q1Index];
+            const q3 = sortedPrices[q3Index];
+            const iqr = q3 - q1;
+            
+            // Filtrujemy wartości używając IQR - wartości poza Q1-1.5*IQR i Q3+1.5*IQR są outliers
+            const lowerBound = q1 - 1.5 * iqr;
+            const upperBound = q3 + 1.5 * iqr;
+            
+            // Filtrujemy wartości głównej linii
+            const filteredPrices = aggregatedPrices.filter(p => p >= lowerBound && p <= upperBound);
+            
+            // Używamy przefiltrowanych wartości lub, jeśli wszystkie są outliers, używamy Q1-Q3
+            let yMin, yMax;
+            if (filteredPrices.length > 0) {
+                yMin = Math.min(...filteredPrices);
+                yMax = Math.max(...filteredPrices);
+            } else {
+                // Fallback: używamy Q1-Q3
+                yMin = q1;
+                yMax = q3;
+            }
+            
+            // Jeśli jest linia referencyjna, uwzględniamy ją w zakresie (ale tylko jeśli jest w rozsądnym zakresie)
+            if (selectedPrice !== null && selectedPrice !== undefined) {
+                if (selectedPrice >= lowerBound && selectedPrice <= upperBound) {
+                    yMin = Math.min(yMin, selectedPrice);
+                    yMax = Math.max(yMax, selectedPrice);
+                }
+            }
+            
+            // Obliczamy średnią wartość i zakres dla lepszego skalowania
+            const avgValue = (yMin + yMax) / 2;
+            const priceRange = yMax - yMin;
+            
+            // Jeśli zakres jest bardzo mały, upewniamy się że mamy minimum wartości
+            if (priceRange < 0.01 && avgValue < 1.0) {
+                // Dla bardzo małych wartości z małym zakresem, używamy większego zakresu procentowego
+                const minRange = Math.max(avgValue * 0.5, 0.2); // 50% wartości średniej lub min 0.2 won
+                const center = avgValue;
+                yMin = Math.max(0, center - minRange / 2);
+                yMax = center + minRange / 2;
+            }
+            
+            // Inteligentne skalowanie w zależności od wartości i zakresu
+            // Dla bardzo małych wartości (< 1 won) używamy większego zakresu procentowego
+            if (avgValue < 1.0) {
+                // Dla małych wartości używamy większego zakresu procentowego
+                if (priceRange === 0 || priceRange < 0.01) {
+                    // Jeśli praktycznie brak różnic, używamy 100% wartości średniej jako zakres (50% w każdą stronę)
+                    const minRange = Math.max(avgValue * 1.0, 0.4); // 100% zakresu, minimum 0.4 won
+                    const center = avgValue;
+                    yMin = Math.max(0, center - minRange / 2);
+                    yMax = center + minRange / 2;
+                } else if (priceRange < 0.1) {
+                    // Dla małych różnic używamy 80% wartości średniej jako zakres
+                    const minRange = Math.max(avgValue * 0.80, priceRange * 5); // 80% lub 5x zakres danych
+                    const center = avgValue;
+                    yMin = Math.max(0, center - minRange / 2);
+                    yMax = center + minRange / 2;
+                } else {
+                    // Dla większych różnic używamy marginesu 50%
+                    const margin = priceRange * 0.5;
+                    yMin = Math.max(0, yMin - margin);
+                    yMax = yMax + margin;
+                }
+            } else {
+                // Dla większych wartości (>= 1 won) standardowa logika
+                if (priceRange === 0 || priceRange < 0.01) {
+                    const minRange = avgValue * 0.20; // 20% zakresu
+                    const center = avgValue;
+                    yMin = Math.max(0, center - minRange / 2);
+                    yMax = center + minRange / 2;
+                } else if (priceRange < 0.1) {
+                    const minRange = avgValue * 0.20; // 20% zakresu
+                    const center = avgValue;
+                    yMin = Math.max(0, center - minRange / 2);
+                    yMax = center + minRange / 2;
+                } else if (priceRange < 1.0) {
+                    const margin = priceRange * 0.3; // 30% marginesu
+                    yMin = Math.max(0, yMin - margin);
+                    yMax = yMax + margin;
+                } else {
+                    const margin = priceRange * 0.05; // 5% marginesu
+                    yMin = Math.max(0, yMin - margin);
+                    yMax = yMax + margin;
+                }
+            }
+            
+            // Debug: logujemy zakres dla diagnozy
+            console.log(`=== Y-AXIS RANGE CALCULATION ===`);
+            console.log(`Aggregated prices (main line): min: ${Math.min(...aggregatedPrices).toFixed(4)}, max: ${Math.max(...aggregatedPrices).toFixed(4)}, count: ${aggregatedPrices.length}`);
+            console.log(`Q1: ${q1.toFixed(4)}, Q3: ${q3.toFixed(4)}, IQR: ${iqr.toFixed(4)}`);
+            console.log(`IQR bounds: [${lowerBound.toFixed(4)}, ${upperBound.toFixed(4)}]`);
+            console.log(`Filtered prices: min: ${yMin.toFixed(4)}, max: ${yMax.toFixed(4)}, count: ${filteredPrices.length}`);
+            console.log(`Average value: ${avgValue.toFixed(4)}`);
+            console.log(`Price range: ${priceRange.toFixed(4)}`);
+            console.log(`Calculated Y-axis range: [${yMin.toFixed(4)}, ${yMax.toFixed(4)}]`);
+            console.log(`Y-axis span: ${(yMax - yMin).toFixed(4)}`);
+            console.log(`================================`);
+            
+            // Tworzymy główny trace z agregowanymi danymi
+            const traces = [{
+                x: aggregatedData.map(d => d.timestamp),
+                y: aggregatedData.map(d => d.price),
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: itemName,
+                line: { color: '#667eea', width: 2 },
+                marker: { size: 8 },
+                hovertemplate: '<b>%{fullData.name}</b><br>' +
+                              'Data: %{x}<br>' +
+                              'Cena (' + (currentPriceType === 'min' ? 'Min' : currentPriceType === 'max' ? 'Max' : 'Śr') + '): %{y:.2f}w<br>' +
+                              'Min: %{customdata[0]:.2f}w<br>' +
+                              'Max: %{customdata[1]:.2f}w<br>' +
+                              'Śr: %{customdata[2]:.2f}w<br>' +
+                              'Cena za 200 szt: %{customdata[4]:.2f}w<br>' +
+                              'Ofert: %{customdata[3]}<extra></extra>',
+                customdata: aggregatedData.map(d => {
+                    const priceFor200 = d.price * 200;
+                    return [d.min, d.max, d.avg, d.count, priceFor200];
+                })
+            }];
+            
+            // Dodajemy obszar pokazujący zakres min-max (opcjonalnie)
+            if (aggregatedData.length > 1) {
+                traces.push({
+                    x: aggregatedData.map(d => d.timestamp),
+                    y: aggregatedData.map(d => d.max),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'Max',
+                    line: { color: 'rgba(102, 126, 234, 0.2)', width: 0 },
+                    showlegend: false,
+                    hoverinfo: 'skip'
+                });
+                
+                traces.push({
+                    x: aggregatedData.map(d => d.timestamp),
+                    y: aggregatedData.map(d => d.min),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'Zakres',
+                    fill: 'tonexty',
+                    fillcolor: 'rgba(102, 126, 234, 0.1)',
+                    line: { color: 'rgba(102, 126, 234, 0.2)', width: 0 },
+                    showlegend: false,
+                    hovertemplate: 'Min: %{y:.2f}w<extra></extra>'
+                });
+            }
+            
+            // Jeśli wybrano typ ceny (min/max/avg), dodajemy linię referencyjną
+            if (selectedPrice !== null && selectedPrice !== undefined) {
+                const priceTypeLabel = currentPriceType === 'min' ? 'Min' : 
+                                      currentPriceType === 'max' ? 'Max' : 'Śr';
+                traces.push({
+                    x: aggregatedData.map(d => d.timestamp),
+                    y: Array(aggregatedData.length).fill(selectedPrice),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: `${priceTypeLabel} (ogólna): ${formatPriceInWon(selectedPrice)}`,
+                    line: { color: '#ff7f0e', width: 2, dash: 'dash' },
+                    hovertemplate: `${priceTypeLabel} (ogólna): %{y:.2f}w<extra></extra>`
+                });
+            }
+            
+            const layout = {
+                title: {
+                    text: `Historia cen: ${itemName}`,
+                    font: { size: 20 }
+                },
+                xaxis: {
+                    title: 'Data i czas',
+                    type: 'date'
+                },
+                yaxis: {
+                    title: 'Cena (won)',
+                    tickformat: ',.2f',
+                    hoverformat: ',.2f',
+                    // Automatyczne skalowanie osi Y do zakresu danych z marginesem
+                    range: [yMin, yMax],
+                    autorange: false,  // Wyłączamy autorange bo ustawiamy własny range
+                    fixedrange: false  // Pozwalamy na zoom, ale początkowy zakres jest ustawiony
+                },
+                hovermode: 'x unified',
+                // Usuwamy template aby nie nadpisywał ustawień zakresu
+                // template: 'plotly_white',
+                height: 500,
+                // Ustawiamy białe tło ręcznie
+                plot_bgcolor: 'white',
+                paper_bgcolor: 'white',
+                margin: { l: 60, r: 30, t: 60, b: 60 },
+                legend: {
+                    orientation: 'v',
+                    yanchor: 'top',
+                    y: 1,
+                    xanchor: 'left',
+                    x: 1.01
+                }
+            };
+            
+            // Renderujemy wykres
+            Plotly.newPlot('chart', traces, layout, {responsive: true}).then(() => {
+                // Wymuszamy ustawienie zakresu Y po renderowaniu
+                Plotly.relayout('chart', {
+                    'yaxis.range': [yMin, yMax],
+                    'yaxis.autorange': false
+                });
+                
+                // Sprawdzamy czy zakres został ustawiony poprawnie
+                const currentLayout = document.getElementById('chart').layout;
+                console.log(`After render - Y-axis range: [${currentLayout.yaxis.range[0].toFixed(4)}, ${currentLayout.yaxis.range[1].toFixed(4)}]`);
+            });
+        }
+        
+        function displayStatisticsPanel(statistics, container) {
+            if (!statistics) {
+                container.innerHTML = '<div class="no-data">Brak statystyk</div>';
+                return;
+            }
+            
+            const minPrice = statistics.min_price || 0;
+            const maxPrice = statistics.max_price || 0;
+            const avgPrice = statistics.avg_price || 0;
+            const medianPrice = statistics.median_price || 0;
+            const minPrice200 = statistics.min_price_200 || 0;
+            const maxPrice200 = statistics.max_price_200 || 0;
+            const avgPrice200 = statistics.avg_price_200 || 0;
+            const medianPrice200 = statistics.median_price_200 || 0;
+            
+            let html = `
+                <div class="stat-group">
+                    <div class="stat-group-title">Cena za 1 sztukę</div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Minimalna:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(minPrice)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Maksymalna:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(maxPrice)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Średnia:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(avgPrice)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Mediana:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(medianPrice)}</span>
+                    </div>
+                </div>
+                
+                <div class="stat-group">
+                    <div class="stat-group-title">Cena za 200 sztuk</div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Minimalna:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(minPrice200)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Maksymalna:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(maxPrice200)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Średnia:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(avgPrice200)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label-panel">Mediana:</span>
+                        <span class="stat-value-panel">${formatPriceInWon(medianPrice200)}</span>
+                    </div>
+                </div>
+            `;
+            
+            if (statistics.total_quantity !== undefined) {
+                html += `
+                    <div class="stat-group">
+                        <div class="stat-group-title">Dostępność</div>
+                        <div class="stat-row">
+                            <span class="stat-label-panel">Dostępna ilość:</span>
+                            <span class="stat-value-panel">${statistics.total_quantity} szt</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label-panel">Liczba ofert:</span>
+                            <span class="stat-value-panel">${statistics.total_offers || statistics.data_points || 0}</span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        function updateStats(totalItems, selectedItemName, dataPoints) {
+            const statsBar = document.getElementById('statsBar');
+            statsBar.style.display = 'flex';
+            
+            if (totalItems !== null) {
+                document.getElementById('totalItems').textContent = totalItems;
+            }
+            
+            if (selectedItemName) {
+                document.getElementById('selectedItem').textContent = selectedItemName;
+            } else if (selectedItemName === null && selectedItem === null) {
+                document.getElementById('selectedItem').textContent = '-';
+            }
+            
+            if (dataPoints !== null) {
+                document.getElementById('dataPoints').textContent = dataPoints;
+            }
+        }
+    </script>
+</body>
+</html>

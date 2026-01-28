@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: metin2-price-chart
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 5001
+    healthCheckPath: /
+    
+  - type: worker
+    name: metin2-price-chart-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -c "from main import data_update_worker; data_update_worker()"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
