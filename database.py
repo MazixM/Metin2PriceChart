@@ -43,8 +43,10 @@ class Database:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL UNIQUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    server_id INTEGER NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(server_id, timestamp)
                 )
             """)
             
@@ -53,6 +55,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS offers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     snapshot_id INTEGER NOT NULL,
+                    server_id INTEGER NOT NULL,
                     item_name TEXT NOT NULL,
                     price REAL NOT NULL,
                     price_in_won REAL NOT NULL,
@@ -76,16 +79,22 @@ class Database:
             
             # Indeksy dla nowej struktury (optymalizacja wydajności)
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots(timestamp)
+                CREATE INDEX IF NOT EXISTS idx_snapshots_server_timestamp ON snapshots(server_id, timestamp)
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_offers_snapshot_id ON offers(snapshot_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_offers_server_id ON offers(server_id)
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_offers_item_name ON offers(item_name)
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_offers_snapshot_item ON offers(snapshot_id, item_name)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_offers_server_item ON offers(server_id, item_name)
             """)
             # Indeks dla szybkiego wyszukiwania po item_name i price_in_won
             cursor.execute("""
@@ -99,8 +108,45 @@ class Database:
             conn.commit()
             logger.info(f"Baza danych zainicjalizowana: {self.db_path}")
             
+            # Migrujemy strukturę jeśli brakuje kolumny server_id
+            self._migrate_schema_if_needed(conn)
+            
             # Sprawdzamy czy trzeba zmigrować dane ze starej struktury
             self._migrate_old_data_if_needed(conn)
+    
+    def _migrate_schema_if_needed(self, conn):
+        """Migruje schemat bazy danych jeśli brakuje kolumny server_id"""
+        cursor = conn.cursor()
+        
+        # Sprawdzamy czy kolumna server_id istnieje w tabeli snapshots
+        cursor.execute("PRAGMA table_info(snapshots)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'server_id' not in columns:
+            logger.info("Migracja schematu: dodawanie kolumny server_id do snapshots...")
+            try:
+                # Dodajemy kolumnę server_id z domyślną wartością 426
+                cursor.execute("ALTER TABLE snapshots ADD COLUMN server_id INTEGER NOT NULL DEFAULT 426")
+                # Usuwamy stary UNIQUE constraint i dodajemy nowy z server_id
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_server_timestamp_new ON snapshots(server_id, timestamp)")
+                conn.commit()
+                logger.info("Migracja schematu zakończona")
+            except Exception as e:
+                logger.warning(f"Błąd migracji schematu snapshots: {e}")
+        
+        # Sprawdzamy czy kolumna server_id istnieje w tabeli offers
+        cursor.execute("PRAGMA table_info(offers)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'server_id' not in columns:
+            logger.info("Migracja schematu: dodawanie kolumny server_id do offers...")
+            try:
+                # Dodajemy kolumnę server_id z domyślną wartością 426
+                cursor.execute("ALTER TABLE offers ADD COLUMN server_id INTEGER NOT NULL DEFAULT 426")
+                conn.commit()
+                logger.info("Migracja schematu offers zakończona")
+            except Exception as e:
+                logger.warning(f"Błąd migracji schematu offers: {e}")
     
     def _migrate_old_data_if_needed(self, conn):
         """Migruje dane ze starej tabeli price_history do nowej struktury snapshotów"""
@@ -129,26 +175,33 @@ class Database:
         """)
         timestamps = [row['timestamp'] for row in cursor.fetchall()]
         
+        # Domyślny server_id dla starych danych (426 - [RUBY] Charon)
+        default_server_id = 426
+        
         migrated = 0
         for timestamp in timestamps:
-            # Tworzymy snapshot
+            # Tworzymy snapshot z domyślnym server_id
             cursor.execute("""
-                INSERT OR IGNORE INTO snapshots (timestamp) VALUES (?)
-            """, (timestamp,))
+                INSERT OR IGNORE INTO snapshots (server_id, timestamp) VALUES (?, ?)
+            """, (default_server_id, timestamp))
             snapshot_id = cursor.lastrowid
             
             # Jeśli snapshot już istniał, pobieramy jego ID
             if snapshot_id == 0:
-                cursor.execute("SELECT id FROM snapshots WHERE timestamp = ?", (timestamp,))
-                snapshot_id = cursor.fetchone()['id']
+                cursor.execute("SELECT id FROM snapshots WHERE server_id = ? AND timestamp = ?", (default_server_id, timestamp))
+                result = cursor.fetchone()
+                if result:
+                    snapshot_id = result['id']
+                else:
+                    continue
             
-            # Migrujemy oferty dla tego snapshot
+            # Migrujemy oferty dla tego snapshot z domyślnym server_id
             cursor.execute("""
-                INSERT INTO offers (snapshot_id, item_name, price, price_in_won, currency, quantity, seller)
-                SELECT ?, item_name, price, price_in_won, currency, quantity, seller
+                INSERT INTO offers (snapshot_id, server_id, item_name, price, price_in_won, currency, quantity, seller)
+                SELECT ?, ?, item_name, price, price_in_won, currency, quantity, seller
                 FROM price_history
                 WHERE timestamp = ? AND price_in_won > 0
-            """, (snapshot_id, timestamp))
+            """, (snapshot_id, default_server_id, timestamp))
             
             migrated += cursor.rowcount
         
@@ -165,12 +218,13 @@ class Database:
         finally:
             conn.close()
     
-    def add_price_data(self, items: List[Dict]):
+    def add_price_data(self, items: List[Dict], server_id: int):
         """
         Dodaje nowe dane cenowe do bazy danych używając struktury snapshotów
         
         Args:
             items: Lista przedmiotów z danymi cenowymi
+            server_id: ID serwera (np. 426, 702)
         """
         timestamp = datetime.now().isoformat()
         added_count = 0
@@ -178,15 +232,15 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            # Tworzymy snapshot (lub pobieramy istniejący jeśli już jest)
+            # Tworzymy snapshot (lub pobieramy istniejący jeśli już jest dla tego serwera)
             cursor.execute("""
-                INSERT OR IGNORE INTO snapshots (timestamp) VALUES (?)
-            """, (timestamp,))
+                INSERT OR IGNORE INTO snapshots (server_id, timestamp) VALUES (?, ?)
+            """, (server_id, timestamp))
             snapshot_id = cursor.lastrowid
             
             # Jeśli snapshot już istniał, pobieramy jego ID
             if snapshot_id == 0:
-                cursor.execute("SELECT id FROM snapshots WHERE timestamp = ?", (timestamp,))
+                cursor.execute("SELECT id FROM snapshots WHERE server_id = ? AND timestamp = ?", (server_id, timestamp))
                 result = cursor.fetchone()
                 if result:
                     snapshot_id = result['id']
@@ -219,10 +273,11 @@ class Database:
                     # Dodajemy do nowej struktury (offers)
                     cursor.execute("""
                         INSERT INTO offers 
-                        (snapshot_id, item_name, price, price_in_won, currency, quantity, seller)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (snapshot_id, server_id, item_name, price, price_in_won, currency, quantity, seller)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         snapshot_id,
+                        server_id,
                         item.get('name', 'Unknown'),
                         price,
                         price_in_won,
@@ -264,12 +319,13 @@ class Database:
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
     
-    def get_item_history(self, item_name: str, limit: Optional[int] = None, days: Optional[int] = None) -> List[Dict]:
+    def get_item_history(self, item_name: str, server_id: int, limit: Optional[int] = None, days: Optional[int] = None) -> List[Dict]:
         """
         Zwraca historię cen dla konkretnego przedmiotu używając zoptymalizowanej struktury snapshotów
         
         Args:
             item_name: Nazwa przedmiotu (dokładne dopasowanie - szybsze niż LIKE)
+            server_id: ID serwera (np. 426, 702)
             limit: Maksymalna liczba wpisów do zwrócenia (None = wszystkie)
             days: Liczba ostatnich dni do pobrania (None = wszystkie)
         """
@@ -280,16 +336,17 @@ class Database:
             # Najpierw próbujemy dokładnego dopasowania
             exact_match = item_name.strip()
             
-            # OPTYMALIZACJA: Pobieramy tylko unikalne snapshots dla danego przedmiotu
+            # OPTYMALIZACJA: Pobieramy tylko unikalne snapshots dla danego przedmiotu i serwera
             # Używamy dokładnego dopasowania (szybsze niż LIKE)
             snapshot_query = """
                 SELECT DISTINCT s.timestamp, s.id
                 FROM snapshots s
                 INNER JOIN offers o ON s.id = o.snapshot_id
                 WHERE o.item_name = ?
+                AND o.server_id = ?
                 AND o.price_in_won > 0
             """
-            snapshot_params = [exact_match]
+            snapshot_params = [exact_match, server_id]
             
             # Dodajemy filtr daty jeśli podano
             if days:
@@ -328,10 +385,11 @@ class Database:
                 INNER JOIN snapshots s ON o.snapshot_id = s.id
                 WHERE o.snapshot_id IN ({placeholders})
                 AND o.item_name = ?
+                AND o.server_id = ?
                 AND o.price_in_won > 0
                 ORDER BY s.timestamp ASC, o.id ASC
             """
-            params = snapshot_ids + [exact_match]
+            params = snapshot_ids + [exact_match, server_id]
             
             # Dodajemy limit na oferty jeśli podano
             if limit:
@@ -344,9 +402,12 @@ class Database:
             
             return result
     
-    def get_latest_data(self) -> tuple[List[Dict], int]:
+    def get_latest_data(self, server_id: int) -> tuple[List[Dict], int]:
         """
         Zwraca najnowsze dane dla wszystkich przedmiotów używając zoptymalizowanej struktury snapshotów
+        
+        Args:
+            server_id: ID serwera (np. 426, 702)
         
         Returns:
             Tuple: (lista najnowszych wpisów po przedmiocie, łączna ilość dostępnych sztuk)
@@ -354,33 +415,23 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            # OPTYMALIZACJA: Pobieramy najnowszy snapshot (jeden zapytanie zamiast wielu)
-            cursor.execute("SELECT id, timestamp FROM snapshots ORDER BY timestamp DESC LIMIT 1")
+            # OPTYMALIZACJA: Pobieramy najnowszy snapshot dla danego serwera
+            cursor.execute("SELECT id, timestamp FROM snapshots WHERE server_id = ? ORDER BY timestamp DESC LIMIT 1", (server_id,))
             snapshot_result = cursor.fetchone()
             
             if not snapshot_result:
-                # Fallback do starej struktury jeśli nowa nie ma danych
-                cursor.execute("SELECT MAX(timestamp) as max_timestamp FROM price_history")
-                result = cursor.fetchone()
-                latest_timestamp = result['max_timestamp'] if result and result['max_timestamp'] else ''
-                if not latest_timestamp:
-                    return [], 0
-                cursor.execute("""
-                    SELECT timestamp, item_name, price, price_in_won, currency, quantity, seller
-                    FROM price_history
-                    WHERE timestamp = ? AND price_in_won > 0
-                """, (latest_timestamp,))
-            else:
-                snapshot_id = snapshot_result['id']
-                latest_timestamp = snapshot_result['timestamp']
-                
-                # Pobieramy wszystkie oferty z najnowszego snapshot (szybkie dzięki indeksowi)
-                cursor.execute("""
-                    SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
-                    FROM offers o
-                    INNER JOIN snapshots s ON o.snapshot_id = s.id
-                    WHERE o.snapshot_id = ? AND o.price_in_won > 0
-                """, (snapshot_id,))
+                return [], 0
+            
+            snapshot_id = snapshot_result['id']
+            latest_timestamp = snapshot_result['timestamp']
+            
+            # Pobieramy wszystkie oferty z najnowszego snapshot dla danego serwera
+            cursor.execute("""
+                SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
+                FROM offers o
+                INNER JOIN snapshots s ON o.snapshot_id = s.id
+                WHERE o.snapshot_id = ? AND o.server_id = ? AND o.price_in_won > 0
+            """, (snapshot_id, server_id))
             
             latest_offers = [dict(row) for row in cursor.fetchall()]
             
@@ -448,66 +499,82 @@ class Database:
             
             return latest_data, total_quantity
     
-    def get_unique_items(self) -> List[str]:
-        """Zwraca listę unikalnych nazw przedmiotów"""
+    def get_unique_items(self, server_id: int) -> List[str]:
+        """
+        Zwraca listę unikalnych nazw przedmiotów dla danego serwera
+        
+        Args:
+            server_id: ID serwera (np. 426, 702)
+        """
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT DISTINCT item_name
-                FROM price_history
-                WHERE price_in_won > 0
-                ORDER BY item_name ASC
-            """)
+                SELECT DISTINCT o.item_name
+                FROM offers o
+                WHERE o.server_id = ?
+                AND o.price_in_won > 0
+                ORDER BY o.item_name ASC
+            """, (server_id,))
             
             return [row['item_name'] for row in cursor.fetchall()]
     
-    def search_items(self, query: str) -> List[str]:
+    def search_items(self, query: str, server_id: int) -> List[str]:
         """
-        Wyszukuje przedmioty po nazwie
+        Wyszukuje przedmioty po nazwie dla danego serwera
         
         Args:
             query: Fraza do wyszukania (case-insensitive)
+            server_id: ID serwera (np. 426, 702)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT DISTINCT item_name
-                FROM price_history
-                WHERE LOWER(item_name) LIKE LOWER(?)
-                AND price_in_won > 0
-                ORDER BY item_name ASC
-            """, (f'%{query}%',))
+                SELECT DISTINCT o.item_name
+                FROM offers o
+                WHERE LOWER(o.item_name) LIKE LOWER(?)
+                AND o.server_id = ?
+                AND o.price_in_won > 0
+                ORDER BY o.item_name ASC
+            """, (f'%{query}%', server_id))
             
             return [row['item_name'] for row in cursor.fetchall()]
     
-    def get_statistics(self) -> Dict:
+    def get_statistics(self, server_id: int) -> Dict:
         """
-        Zwraca statystyki cen dla wszystkich przedmiotów
+        Zwraca statystyki cen dla wszystkich przedmiotów dla danego serwera
+        
+        Args:
+            server_id: ID serwera (np. 426, 702)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # Używamy nowej struktury offers zamiast price_history
             cursor.execute("""
                 SELECT 
-                    item_name,
-                    MIN(price_in_won) as min_price,
-                    MAX(price_in_won) as max_price,
-                    AVG(price_in_won) as avg_price,
+                    o.item_name,
+                    MIN(o.price_in_won) as min_price,
+                    MAX(o.price_in_won) as max_price,
+                    AVG(o.price_in_won) as avg_price,
                     COUNT(*) as data_points
-                FROM price_history
-                WHERE price_in_won > 0
-                GROUP BY item_name
-            """)
+                FROM offers o
+                WHERE o.server_id = ?
+                AND o.price_in_won > 0
+                GROUP BY o.item_name
+            """, (server_id,))
             
             stats = {}
             for row in cursor.fetchall():
-                # Pobieramy najnowszą cenę dla każdego przedmiotu
+                # Pobieramy najnowszą cenę dla każdego przedmiotu z najnowszego snapshot
                 cursor.execute("""
-                    SELECT price_in_won
-                    FROM price_history
-                    WHERE item_name = ? AND price_in_won > 0
-                    ORDER BY timestamp DESC
+                    SELECT o.price_in_won
+                    FROM offers o
+                    INNER JOIN snapshots s ON o.snapshot_id = s.id
+                    WHERE o.item_name = ? 
+                    AND o.server_id = ?
+                    AND o.price_in_won > 0
+                    ORDER BY s.timestamp DESC
                     LIMIT 1
-                """, (row['item_name'],))
+                """, (row['item_name'], server_id))
                 
                 current_row = cursor.fetchone()
                 current_price = float(current_row['price_in_won']) if current_row else None
@@ -522,13 +589,14 @@ class Database:
             
             return stats
     
-    def get_item_statistics(self, item_name: str, use_full_history: bool = True) -> Optional[Dict]:
+    def get_item_statistics(self, item_name: str, server_id: int, use_full_history: bool = True) -> Optional[Dict]:
         """
         Zwraca statystyki dla konkretnego przedmiotu używając agregacji po stronie bazy danych
         (znacznie szybsze niż pobieranie wszystkich danych)
         
         Args:
             item_name: Nazwa przedmiotu
+            server_id: ID serwera (np. 426, 702)
             use_full_history: Jeśli True, używa ostatnich 90 dni dla statystyk
         
         Returns:
@@ -544,7 +612,7 @@ class Database:
             cutoff_timestamp = cutoff_date.isoformat()
             
             # WAŻNE: Obliczamy statystyki z CEN PER SZTUKĘ, nie z cen całkowitych
-            # Pobieramy wszystkie oferty z ceną per sztukę
+            # Pobieramy wszystkie oferty z ceną per sztukę dla danego serwera
             cursor.execute("""
                 SELECT 
                     o.price_in_won,
@@ -552,9 +620,10 @@ class Database:
                 FROM offers o
                 INNER JOIN snapshots s ON o.snapshot_id = s.id
                 WHERE o.item_name = ?
+                AND o.server_id = ?
                 AND o.price_in_won > 0
                 AND s.timestamp >= ?
-            """, (item_name, cutoff_timestamp))
+            """, (item_name, server_id, cutoff_timestamp))
             
             rows = cursor.fetchall()
             

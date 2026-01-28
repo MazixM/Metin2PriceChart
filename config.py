@@ -6,11 +6,14 @@ STORE_URL = "https://metin2alerts.com/store/"
 # Interwał odświeżania danych (w sekundach)
 REFRESH_INTERVAL = 300  # 5 minut
 
-# Serwer do monitorowania (domyślnie pierwszy dostępny)
-DEFAULT_SERVER = None  # None = pierwszy dostępny
+# Dostępne serwery
+AVAILABLE_SERVERS = {
+    426: "[RUBY] Charon",
+    702: "Polska"
+}
 
-# ID serwera dla API (np. 426)
-# Jeśli None, używa domyślnego serwera (426)
+# ID serwera dla API (domyślnie 426)
+# Można zmienić przez interfejs użytkownika
 DEFAULT_SERVER_ID = 426
 
 # URL pliku z tłumaczeniami nazw przedmiotów na język polski

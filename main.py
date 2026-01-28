@@ -50,35 +50,41 @@ def data_update_worker():
             logger.info(f"Czas: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
             try:
-                # Pobieramy wszystkie dane (bez wstępnego filtrowania)
-                # Filtrowanie będzie dostępne później w interfejsie użytkownika (po nazwie, sklepie, itp.)
-                logger.info("Pobieranie wszystkich danych...")
-                items = fetcher.fetch_upgrade_items(
-                    server_name=config.DEFAULT_SERVER,
-                    item_names=None,  # None = pobierz wszystkie przedmioty
-                    server_id=config.DEFAULT_SERVER_ID
-                )
+                # Pobieramy dane dla wszystkich dostępnych serwerów
+                servers = getattr(config, 'AVAILABLE_SERVERS', {config.DEFAULT_SERVER_ID: 'Default'})
                 
-                if items:
-                    logger.info(f"Pobrano {len(items)} przedmiotów")
+                for server_id, server_name in servers.items():
+                    logger.info(f"Pobieranie danych dla serwera {server_id} ({server_name})...")
                     
-                    # Dodajemy dane do historii
-                    chart_manager.add_price_data(items)
+                    items = fetcher.fetch_upgrade_items(
+                        server_name=None,  # Nie używamy server_name, tylko server_id
+                        item_names=None,  # None = pobierz wszystkie przedmioty
+                        server_id=server_id
+                    )
                     
-                    # Wyświetlamy statystyki
-                    stats = chart_manager.get_statistics()
-                    logger.info("Statystyki cen:")
-                    for item, stat in stats.items():
-                        min_price = stat.get('min_price', 0) or 0
-                        max_price = stat.get('max_price', 0) or 0
-                        avg_price = stat.get('avg_price', 0) or 0
-                        current_price = stat.get('current_price', 0) or 0
-                        logger.info(f"  {item}: min={min_price:.0f}, "
-                                  f"max={max_price:.0f}, "
-                                  f"avg={avg_price:.0f}, "
-                                  f"current={current_price:.0f}")
-                else:
-                    logger.warning("Nie pobrano żadnych danych")
+                    if items:
+                        logger.info(f"Pobrano {len(items)} przedmiotów dla serwera {server_id}")
+                        
+                        # Dodajemy dane do historii z odpowiednim server_id
+                        chart_manager.add_price_data(items, server_id)
+                    else:
+                        logger.warning(f"Nie pobrano żadnych danych dla serwera {server_id}")
+                
+                # Wyświetlamy statystyki (dla każdego serwera)
+                for server_id, server_name in servers.items():
+                    stats = chart_manager.get_statistics(server_id)
+                    if stats:
+                        logger.info(f"Statystyki cen (serwer {server_id} - {server_name}): {len(stats)} przedmiotów")
+                        # Pokazujemy tylko pierwsze 3 dla czytelności
+                        for item, stat in list(stats.items())[:3]:
+                            min_price = stat.get('min_price', 0) or 0
+                            max_price = stat.get('max_price', 0) or 0
+                            avg_price = stat.get('avg_price', 0) or 0
+                            current_price = stat.get('current_price', 0) or 0
+                            logger.info(f"  {item}: min={min_price:.0f}, "
+                                      f"max={max_price:.0f}, "
+                                      f"avg={avg_price:.0f}, "
+                                      f"current={current_price:.0f}")
                 
             except Exception as e:
                 logger.error(f"Błąd podczas pobierania danych: {e}", exc_info=True)

@@ -6,6 +6,7 @@ from chart_manager import ChartManager
 import logging
 from datetime import datetime
 import json
+import config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -91,12 +92,18 @@ def index_method_not_allowed():
     return jsonify({'error': 'Method not allowed'}), 405
 
 
+@app.route('/api/servers')
+def get_servers():
+    """Zwraca listę dostępnych serwerów"""
+    return jsonify({'servers': config.AVAILABLE_SERVERS, 'default': config.DEFAULT_SERVER_ID})
+
 @app.route('/api/items')
 def get_items():
-    """Zwraca listę wszystkich unikalnych przedmiotów"""
+    """Zwraca listę wszystkich unikalnych przedmiotów dla danego serwera"""
+    server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
     cm = get_chart_manager()
-    items_list = cm.db.get_unique_items()
-    return jsonify({'items': items_list})
+    items_list = cm.db.get_unique_items(server_id)
+    return jsonify({'items': items_list, 'server_id': server_id})
 
 
 @app.route('/api/item/<item_name>')
@@ -109,6 +116,7 @@ def get_item_history(item_name):
     item_name = unquote(item_name)
     
     # Pobieramy parametry z query string
+    server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
     limit = request.args.get('limit', type=int)
     days = request.args.get('days', type=int)
     
@@ -120,17 +128,18 @@ def get_item_history(item_name):
     if limit and limit > 10000:
         limit = 10000
     
-    history = cm.db.get_item_history(item_name, limit=limit, days=days)
+    history = cm.db.get_item_history(item_name, server_id, limit=limit, days=days)
     
     if not history:
-        return jsonify({'history': [], 'message': 'Brak danych'})
+        return jsonify({'history': [], 'message': 'Brak danych', 'server_id': server_id})
     
     # Pobieramy statystyki z bazy danych (używamy ostatnich 90 dni dla statystyk - szybciej)
-    stats = cm.db.get_item_statistics(item_name, use_full_history=True)
+    stats = cm.db.get_item_statistics(item_name, server_id, use_full_history=True)
     total_quantity = stats['total_quantity'] if stats else 0
     
     return jsonify({
         'item_name': item_name,
+        'server_id': server_id,
         'history': history,
         'count': len(history),
         'statistics': stats,
@@ -141,33 +150,36 @@ def get_item_history(item_name):
 
 @app.route('/api/search')
 def search_items():
-    """Wyszukuje przedmioty po nazwie"""
+    """Wyszukuje przedmioty po nazwie dla danego serwera"""
     query = request.args.get('q', '').strip()
+    server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
     
     if not query:
-        return jsonify({'items': []})
+        return jsonify({'items': [], 'server_id': server_id})
     
     cm = get_chart_manager()
-    items_list = cm.db.search_items(query)
-    return jsonify({'items': items_list})
+    items_list = cm.db.search_items(query, server_id)
+    return jsonify({'items': items_list, 'server_id': server_id})
 
 
 @app.route('/api/stats')
 def get_statistics():
-    """Zwraca statystyki dla wszystkich przedmiotów"""
+    """Zwraca statystyki dla wszystkich przedmiotów dla danego serwera"""
+    server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
     cm = get_chart_manager()
-    stats = cm.get_statistics()
-    return jsonify({'statistics': stats})
+    stats = cm.get_statistics(server_id)
+    return jsonify({'statistics': stats, 'server_id': server_id})
 
 
 @app.route('/api/latest')
 def get_latest_data():
     """Zwraca najnowsze dane dla wszystkich przedmiotów (bez obliczania statystyk - tylko najnowsze ceny)"""
+    server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
     cm = get_chart_manager()
-    latest_data, total_quantity = cm.db.get_latest_data()
+    latest_data, total_quantity = cm.db.get_latest_data(server_id)
     
     if not latest_data:
-        return jsonify({'data': [], 'message': 'Brak danych w historii', 'total_quantity': 0})
+        return jsonify({'data': [], 'message': 'Brak danych w historii', 'total_quantity': 0, 'server_id': server_id})
     
     # Znajdujemy najnowszy timestamp
     latest_timestamp = latest_data[0].get('timestamp') if latest_data else None
@@ -176,7 +188,8 @@ def get_latest_data():
         'data': latest_data,
         'count': len(latest_data),
         'total_quantity': total_quantity,
-        'last_update': latest_timestamp
+        'last_update': latest_timestamp,
+        'server_id': server_id
     })
 
 

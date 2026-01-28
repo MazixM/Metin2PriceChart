@@ -268,6 +268,14 @@
         <h1>Metin2 Price Chart</h1>
         <p class="subtitle">Monitor cen przedmiotów w czasie rzeczywistym</p>
         
+        <div style="text-align: center; margin-bottom: 20px;">
+            <label for="serverSelect" style="margin-right: 10px; font-weight: bold;">Serwer:</label>
+            <select id="serverSelect" class="search-box" style="width: auto; min-width: 200px; padding: 8px 12px; font-size: 14px;" onchange="onServerChange()">
+                <option value="426">[RUBY] Charon (426)</option>
+                <option value="702">Polska (702)</option>
+            </select>
+        </div>
+        
         <div class="search-section">
             <input type="text" id="searchInput" class="search-box" placeholder="Wpisz nazwę przedmiotu do wyszukania...">
             <button class="btn" onclick="searchItems()">Szukaj</button>
@@ -324,6 +332,8 @@
         let allItems = [];
         let currentPriceType = 'min'; // Domyślnie minimalna
         let autoRefreshInterval = null; // Interwał automatycznego odświeżania
+        let currentServerId = 426; // Domyślny serwer
+        let availableServers = {}; // Lista dostępnych serwerów
         
         // Funkcja formatowania ceny w won do formatu "X,XXw"
         function formatPriceInWon(priceInWon) {
@@ -385,8 +395,52 @@
             }
         }
         
+        // Funkcja obsługująca zmianę serwera
+        function onServerChange() {
+            const serverSelect = document.getElementById('serverSelect');
+            currentServerId = parseInt(serverSelect.value);
+            
+            // Resetujemy wybór przedmiotu
+            selectedItem = null;
+            document.getElementById('itemsContainer').style.display = 'block';
+            document.getElementById('chartContainer').style.display = 'none';
+            document.getElementById('priceTypeSelector').style.display = 'none';
+            
+            // Przeładowujemy dane dla nowego serwera
+            loadAllItems();
+        }
+        
+        // Funkcja do pobierania listy serwerów
+        async function loadServers() {
+            try {
+                const response = await fetch('/api/servers');
+                const data = await response.json();
+                availableServers = data.servers;
+                currentServerId = data.default || 426;
+                
+                // Aktualizujemy selektor serwera
+                const serverSelect = document.getElementById('serverSelect');
+                serverSelect.innerHTML = '';
+                for (const [id, name] of Object.entries(availableServers)) {
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = `${name} (${id})`;
+                    if (parseInt(id) === currentServerId) {
+                        option.selected = true;
+                    }
+                    serverSelect.appendChild(option);
+                }
+            } catch (error) {
+                console.error('Błąd ładowania serwerów:', error);
+            }
+        }
+        
         // Ładowanie danych przy starcie
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Najpierw ładujemy listę serwerów
+            await loadServers();
+            
+            // Potem ładujemy dane
             loadAllItems();
             
             // Ustawiamy automatyczne odświeżanie
@@ -414,7 +468,7 @@
                 }
                 
                 // Ładujemy tylko najnowsze ceny (bez statystyk - szybciej)
-                const response = await fetch('/api/latest');
+                const response = await fetch(`/api/latest?server_id=${currentServerId}`);
                 const data = await response.json();
                 
                 if (data.data && data.data.length > 0) {
@@ -449,12 +503,12 @@
             }
             
             try {
-                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&server_id=${currentServerId}`);
                 const data = await response.json();
                 
                 if (data.items && data.items.length > 0) {
                     // Pobieramy najnowsze dane dla wszystkich przedmiotów
-                    const latestResponse = await fetch('/api/latest');
+                    const latestResponse = await fetch(`/api/latest?server_id=${currentServerId}`);
                     const latestData = await latestResponse.json();
                     
                     // Filtrujemy tylko znalezione przedmioty
@@ -597,7 +651,7 @@
                 chartContainer.style.display = 'flex';
                 chartContainer.innerHTML = '<div class="loading">Ładowanie danych...</div>';
                 
-                const response = await fetch(`/api/item/${encodeURIComponent(itemName)}`);
+                const response = await fetch(`/api/item/${encodeURIComponent(itemName)}?server_id=${currentServerId}`);
                 const data = await response.json();
                 
                 if (data.history && data.history.length > 0) {

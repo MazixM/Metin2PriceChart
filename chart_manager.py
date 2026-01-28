@@ -50,14 +50,15 @@ class ChartManager:
             self._price_history_cache = self.db.get_all_history()
         return self._price_history_cache
     
-    def add_price_data(self, items: List[Dict]):
+    def add_price_data(self, items: List[Dict], server_id: int):
         """
         Dodaje nowe dane cenowe do bazy danych
         
         Args:
             items: Lista przedmiotów z danymi cenowymi
+            server_id: ID serwera (np. 426, 702)
         """
-        self.db.add_price_data(items)
+        self.db.add_price_data(items, server_id)
         # Czyścimy cache aby następne odwołanie pobrało świeże dane
         self._price_history_cache = None
     
@@ -164,9 +165,14 @@ class ChartManager:
         
         return output_file
     
-    def get_statistics(self) -> Dict:
-        """Zwraca statystyki cen (wszystkie ceny znormalizowane do won)"""
-        return self.db.get_statistics()
+    def get_statistics(self, server_id: int) -> Dict:
+        """
+        Zwraca statystyki cen (wszystkie ceny znormalizowane do won) dla danego serwera
+        
+        Args:
+            server_id: ID serwera (np. 426, 702)
+        """
+        return self.db.get_statistics(server_id)
     
     def get_item_price_stats(self, item_name: str, price_type: str = 'min') -> Optional[float]:
         """
