@@ -1,6 +1,8 @@
 """
 Web interface dla aplikacji Metin2 Price Chart
 """
+import os
+import subprocess
 from flask import Flask, render_template, jsonify, request
 from chart_manager import ChartManager
 import logging
@@ -214,6 +216,43 @@ def get_latest_data():
         'limit': limit if not items_param else None,
         'offset': offset if not items_param else None,
     })
+
+
+@app.route('/webhook', methods=['POST', 'GET'])
+def webhook_deploy():
+    """
+    Webhook do automatycznego deployu po pushu (np. z GitHub).
+    Wymaga ustawienia DEPLOY_WEBHOOK_SECRET (np. losowy string).
+    GET zwraca 405 (tylko POST uruchamia deploy).
+    """
+    secret = os.environ.get('DEPLOY_WEBHOOK_SECRET', '').strip()
+    if not secret:
+        return jsonify({'error': 'Webhook nie skonfigurowany (brak DEPLOY_WEBHOOK_SECRET)'}), 503
+    # Sprawdzenie secretu: query ?secret=... lub header X-Webhook-Secret
+    provided = request.args.get('secret') or request.headers.get('X-Webhook-Secret') or ''
+    if provided != secret:
+        return jsonify({'error': 'Nieprawidłowy secret'}), 403
+    if request.method != 'POST':
+        return jsonify({'error': 'Użyj POST'}), 405
+    deploy_script = os.environ.get('DEPLOY_SCRIPT', '')
+    if not deploy_script or not os.path.isfile(deploy_script):
+        # Domyślnie: szukaj deploy.sh w katalogu aplikacji
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        deploy_script = os.path.join(app_dir, 'deploy.sh')
+    if not os.path.isfile(deploy_script):
+        return jsonify({'error': 'Brak skryptu deploy (ustaw DEPLOY_SCRIPT lub dodaj deploy.sh)'}), 503
+    try:
+        subprocess.Popen(
+            ['/bin/bash', deploy_script],
+            cwd=os.path.dirname(deploy_script),
+            env=os.environ.copy(),
+            start_new_session=True,
+        )
+        logger.info("Webhook: uruchomiono skrypt deploy w tle")
+        return jsonify({'ok': True, 'message': 'Deploy uruchomiony'}), 200
+    except Exception as e:
+        logger.exception("Webhook: błąd uruchomienia deploy")
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

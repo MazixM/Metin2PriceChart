@@ -1,0 +1,28 @@
+# Przykładowa jednostka systemd – automatyczny start i restart aplikacji.
+# Instalacja na VPS:
+#   1. Skopiuj do systemd: sudo cp metin2pricechart.service.example /etc/systemd/system/metin2pricechart.service
+#   2. Edytuj: sudo nano /etc/systemd/system/metin2pricechart.service  (ścieżki, użytkownik)
+#   3. Włącz i start: sudo systemctl daemon-reload && sudo systemctl enable --now metin2pricechart
+#   4. Webhook po deployu zrobi: systemctl restart metin2pricechart
+
+[Unit]
+Description=Metin2 Price Chart
+After=network.target
+
+[Service]
+Type=simple
+User=twoj_uzytkownik
+WorkingDirectory=/ścieżka/do/Metin2PriceChart
+Environment=PORT=5001
+Environment=DATABASE_PATH=/ścieżka/do/Metin2PriceChart/price_history.db
+# Opcjonalnie – tryb małego RAM:
+# Environment=LOW_MEMORY=1
+# Webhook (ustaw secret w GitHub → Settings → Webhooks):
+# Environment=DEPLOY_WEBHOOK_SECRET=twoj_tajny_losowy_string
+# Environment=DEPLOY_SERVICE=metin2pricechart
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -40,14 +40,8 @@ Aplikacja będzie dostępna pod adresem: `https://metin2-price-chart.onrender.co
 
 ## Ważne!
 
-### Selenium w chmurze
-Aplikacja używa Selenium. Render/Railway automatycznie instalują Chrome, ale jeśli wystąpią problemy:
-
-1. **Sprawdź logi** w panelu Render/Railway
-2. **Możliwe rozwiązanie:** Dodaj do `requirements.txt`:
-   ```
-   chromedriver-binary-auto>=0.1.0
-   ```
+### Pobieranie danych
+Dane są pobierane wyłącznie przez HTTP (API). Nie jest potrzebna przeglądarka.
 
 ### Baza danych
 - SQLite działa, ale w chmurze lepiej PostgreSQL
@@ -72,10 +66,6 @@ python main.py
 ---
 
 ## Troubleshooting
-
-**"Selenium nie działa"**
-- Sprawdź logi w Render/Railway
-- Może wymagać: `apt-get install -y chromium-browser` (dodaj do build command)
 
 **"Worker nie działa"**
 - Sprawdź czy worker service jest uruchomiony w Render

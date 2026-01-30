@@ -21,7 +21,14 @@ Aplikacja do monitorowania i wizualizacji cen ulepszaczy z serwera Metin2 Alerts
 pip install -r requirements.txt
 ```
 
-2. Dane są pobierane przez HTTP z API (bez przeglądarki)
+2. Skopiuj konfigurację (config.py jest w .gitignore – nie nadpisuje git pull):
+```bash
+cp config.example.py config.py
+# Opcjonalnie edytuj config.py
+```
+   Jeśli w repo nadal jest śledzony config.py, usuń go z gita (plik zostaje): `git rm --cached config.py`.
+
+3. Dane są pobierane przez HTTP z API (bez przeglądarki)
 
 ## Użycie
 

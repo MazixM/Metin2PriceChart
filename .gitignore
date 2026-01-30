@@ -30,7 +30,8 @@ wheels/
 *.swo
 *~
 
-# Aplikacja
+# Aplikacja (config.py lokalny – skopiuj z config.example.py)
+config.py
 price_history.json
 price_chart.html
 *.log

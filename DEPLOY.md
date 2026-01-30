@@ -1,6 +1,119 @@
 # Deployment Guide - Metin2 Price Chart
 
+## Wymagania RAM
+
+Dane są pobierane **wyłącznie przez HTTP** (API metin2alerts.com), bez przeglądarki.
+
+| Scenariusz | Zalecane RAM |
+|------------|---------------|
+| **Minimum** | **512 MB** – Python, Flask, SQLite (cache 64 MB), worker przy pobieraniu jednego serwera (~40–80k ofert) |
+| **Bezpiecznie** | **1 GB** – zapas na szczyty przy 2 serwerach i wielu requestach |
+
+**Skąd te wartości:**
+- Python + Flask: ~50–100 MB  
+- SQLite: 64 MB cache na połączenie (`PRAGMA cache_size=-64000`)  
+- Worker: przy zapisie snapshotu (~80k ofert) krótkotrwały szczyt ~100–200 MB  
+
+**Mało RAM (np. 256–512 MB):** zmniejsz cache SQLite: `export SQLITE_CACHE_KB=-16000` (16 MB zamiast 64 MB). Wartość ujemna = rozmiar w KB (`-16000` = 16 MB).
+
+### Serwer z małym RAM (np. 384 MB)
+
+**Najprościej – tryb LOW_MEMORY (jedna zmienna):**
+
+```bash
+export LOW_MEMORY=1
+python main.py
+```
+
+`LOW_MEMORY=1` ustawia automatycznie:
+- **SQLITE_CACHE_KB=-4096** (4 MB zamiast 64 MB)
+- **BATCH_INSERT_SIZE=2000** (mniejsze porcje zapisu)
+- **SKIP_PRICE_HISTORY_TABLE=1** (zapis tylko do tabeli `offers`, bez duplikatu w `price_history`)
+- Worker po każdym serwerze zwalnia pamięć (`gc.collect()`)
+- Pomijane jest logowanie statystyk w workerze (mniej zapytań do bazy)
+
+**Ręcznie (gdy chcesz dopasować wartości):**
+
+```bash
+export SQLITE_CACHE_KB=-8192    # 8 MB cache
+export BATCH_INSERT_SIZE=3000
+export SKIP_PRICE_HISTORY_TABLE=1   # opcjonalnie – oszczędza RAM i dysk
+python main.py
+```
+
+Opcjonalnie: uruchom **tylko jeden serwer** – w `config.py` ustaw `AVAILABLE_SERVERS = {426: "[RUBY] Charon"}` (bez 702).
+
+---
+
 ## Opcje deploymentu
+
+### 0. VPS (np. Ubuntu, Debian)
+
+**Tak, aplikacja będzie działać na VPS.** Wymagania:
+
+- **Python 3.10+** i `pip install -r requirements.txt`
+- **Dostęp do internetu** (pobieranie danych z metin2alerts.com)
+- **Port** – aplikacja nasłuchuje na `0.0.0.0` (dostęp z zewnątrz). Port z zmiennej `PORT` lub domyślnie `5001`.
+
+**Uruchomienie:**
+
+```bash
+# Opcjonalnie: ścieżka do bazy (domyślnie price_history.db w katalogu roboczym)
+export DATABASE_PATH=/var/lib/metin2pricechart/price_history.db
+export PORT=5001
+python main.py
+```
+
+**Produkcja (gunicorn):**
+
+```bash
+pip install gunicorn
+export PORT=5001
+gunicorn -w 1 -b 0.0.0.0:${PORT} --timeout 120 "app:app"
+```
+
+Uwaga: worker (aktualizacja danych) działa w `main.py`. Przy gunicorn worker **nie** jest uruchamiany – do pełnej funkcjonalności uruchamiaj `python main.py` albo dodaj osobny proces/cron do okresowego pobierania danych.
+
+**Pobieranie danych:** wyłącznie przez HTTP (request do API metin2alerts.com, np. `curl`-style). Bez przeglądarki i bez dodatkowych zależności.
+
+**Firewall:** Otwórz port (np. 5001) lub postaw reverse proxy (nginx) z SSL.
+
+**Automatyczne aktualizowanie po commicie (webhook z GitHub):**
+
+1. **Uruchom aplikację przez systemd** (żeby webhook mógł zrestartować usługę):
+   - Skopiuj `metin2pricechart.service.example` do `/etc/systemd/system/metin2pricechart.service`
+   - W pliku ustaw: `User`, `WorkingDirectory`, `Environment` (PORT, DATABASE_PATH, opcjonalnie LOW_MEMORY)
+   - Dodaj zmienne webhooka:
+     ```ini
+     Environment=DEPLOY_WEBHOOK_SECRET=wymysl_losowy_tajny_string
+     Environment=DEPLOY_SERVICE=metin2pricechart
+     ```
+   - Włącz i uruchom: `sudo systemctl daemon-reload && sudo systemctl enable --now metin2pricechart`
+
+2. **Skrypt deploy** – w katalogu projektu jest `deploy.sh`. Nadaj uprawnienia: `chmod +x deploy.sh`. Opcjonalnie ustaw na VPS:
+   - `DEPLOY_APP_DIR` – katalog z repo (domyślnie katalog, w którym leży `deploy.sh`)
+   - `DEPLOY_PIP=1` – jeśli chcesz po `git pull` uruchamiać `pip install -r requirements.txt`
+   - `DEPLOY_SERVICE=metin2pricechart` – nazwa usługi systemd do restartu (domyślnie `metin2pricechart`)
+
+3. **Webhook w GitHubie:**
+   - Repozytorium → **Settings** → **Webhooks** → **Add webhook**
+   - **Payload URL:** `https://twoj-vps:5001/webhook?secret=wymysl_losowy_tajny_string`  
+     (albo ten sam secret w nagłówku `X-Webhook-Secret` i URL bez `?secret=`)
+   - **Content type:** `application/json`
+   - **Events:** np. "Just the push event"
+   - **Secret:** ten sam co w DEPLOY_WEBHOOK_SECRET (opcjonalnie, GitHub podpisuje payload – nasz endpoint wymaga tylko `secret` w query lub nagłówku)
+
+4. Po **pushu** na branch (np. `main`) GitHub wyśle POST na ten URL; aplikacja uruchomi `deploy.sh` w tle, skrypt zrobi `git pull` i `systemctl restart metin2pricechart`.
+
+**Config:** `config.py` jest w `.gitignore` – nie jest w repo i nie jest nadpisywany przy `git pull`. Przy pierwszym klonowaniu na VPS: `cp config.example.py config.py` i edytuj. Jeśli w swoim repo nadal śledzisz `config.py`, usuń go z gita (plik zostaje): `git rm --cached config.py`.
+
+**Tylko IPv6 (VPS bez IPv4):**
+
+- Ustaw nasłuch na IPv6: `export HOST=::` przed uruchomieniem.
+- Aplikacja będzie dostępna pod adresem `http://[twoje-ipv6]:PORT`.
+- **Pobieranie danych:** jeśli serwer ma **tylko IPv6**, zapytania do `metin2alerts.com` muszą iść przez IPv6 – host docelowy musi mieć rekord AAAA. Jeśli nie ma, worker nie pobierze danych (API zwróci błąd). W takim przypadku rozważ VPS z dual-stack (IPv4 + IPv6) albo tunel IPv4.
+
+---
 
 ### 1. Render (Zalecane) ⭐
 
@@ -97,16 +210,8 @@
 
 ## Ważne uwagi
 
-### Selenium w chmurze
-Aplikacja używa Selenium, które może wymagać dodatkowej konfiguracji w chmurze:
-
-**Opcja 1: Użyj headless Chrome**
-- Render/Railway automatycznie instalują Chrome
-- Może wymagać dodatkowych zależności
-
-**Opcja 2: Zastąp Selenium requests**
-- Jeśli API nie wymaga JavaScript, użyj `requests` zamiast Selenium
-- To znacznie uprości deployment
+### Pobieranie danych
+Dane są pobierane **wyłącznie przez HTTP** (API metin2alerts.com). Nie jest potrzebna przeglądarka ani Chrome.
 
 ### Baza danych
 - SQLite działa lokalnie, ale w chmurze lepiej użyć PostgreSQL
@@ -129,11 +234,6 @@ python main.py
 ```
 
 ## Troubleshooting
-
-**Problem: Selenium nie działa**
-- Sprawdź logi w Render/Railway
-- Może wymagać dodatkowych pakietów systemowych
-- Rozważ zastąpienie Selenium przez `requests`
 
 **Problem: Baza danych nie działa**
 - SQLite może mieć problemy z zapisem w chmurze
