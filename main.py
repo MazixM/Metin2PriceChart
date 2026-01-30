@@ -2,7 +2,9 @@
 Główny plik aplikacji do monitorowania cen ulepszaczy Metin2
 Uruchamia background service do aktualizacji danych oraz web interface
 """
+import os
 import time
+import gc
 import logging
 import threading
 from datetime import datetime
@@ -61,34 +63,32 @@ def data_update_worker():
                     logger.info(f"Pobieranie danych dla serwera {server_id} ({server_name})...")
                     
                     items = fetcher.fetch_upgrade_items(
-                        server_name=None,  # Nie używamy server_name, tylko server_id
-                        item_names=None,  # None = pobierz wszystkie przedmioty
+                        server_name=None,
+                        item_names=None,
                         server_id=server_id
                     )
                     
                     if items:
                         logger.info(f"Pobrano {len(items)} przedmiotów dla serwera {server_id}")
-                        
-                        # Dodajemy dane do historii z odpowiednim server_id
                         chart_manager.add_price_data(items, server_id)
+                        # Zwolnienie pamięci przed kolejnym serwerem (szczególnie przy małym RAM)
+                        del items
+                        gc.collect()
                     else:
                         logger.warning(f"Nie pobrano żadnych danych dla serwera {server_id}")
                 
-                # Wyświetlamy statystyki (dla każdego serwera)
-                for server_id, server_name in servers.items():
-                    stats = chart_manager.get_statistics(server_id)
-                    if stats:
-                        logger.info(f"Statystyki cen (serwer {server_id} - {server_name}): {len(stats)} przedmiotów")
-                        # Pokazujemy tylko pierwsze 3 dla czytelności
-                        for item, stat in list(stats.items())[:3]:
-                            min_price = stat.get('min_price', 0) or 0
-                            max_price = stat.get('max_price', 0) or 0
-                            avg_price = stat.get('avg_price', 0) or 0
-                            current_price = stat.get('current_price', 0) or 0
-                            logger.info(f"  {item}: min={min_price:.0f}, "
-                                      f"max={max_price:.0f}, "
-                                      f"avg={avg_price:.0f}, "
-                                      f"current={current_price:.0f}")
+                # Wyświetlamy statystyki (pomijane przy LOW_MEMORY – oszczędność RAM)
+                if not getattr(config, 'LOW_MEMORY', False):
+                    for server_id, server_name in servers.items():
+                        stats = chart_manager.get_statistics(server_id)
+                        if stats:
+                            logger.info(f"Statystyki cen (serwer {server_id} - {server_name}): {len(stats)} przedmiotów")
+                            for item, stat in list(stats.items())[:3]:
+                                min_price = stat.get('min_price', 0) or 0
+                                max_price = stat.get('max_price', 0) or 0
+                                avg_price = stat.get('avg_price', 0) or 0
+                                current_price = stat.get('current_price', 0) or 0
+                                logger.info(f"  {item}: min={min_price:.0f}, max={max_price:.0f}, avg={avg_price:.0f}, current={current_price:.0f}")
                 
             except Exception as e:
                 logger.error(f"Błąd podczas pobierania danych: {e}", exc_info=True)
@@ -106,6 +106,16 @@ def data_update_worker():
 def main():
     """Główna funkcja aplikacji - uruchamia web interface i background service"""
     logger.info("Uruchamianie aplikacji Metin2 Price Chart")
+    
+    # Tryb oszczędzania RAM (config.LOW_MEMORY lub LOW_MEMORY=1): mniejszy cache, mniejsze batchy, bez price_history
+    if getattr(config, 'LOW_MEMORY', False):
+        if 'SQLITE_CACHE_KB' not in os.environ:
+            os.environ['SQLITE_CACHE_KB'] = '-4096'  # 4 MB
+        if 'BATCH_INSERT_SIZE' not in os.environ:
+            os.environ['BATCH_INSERT_SIZE'] = '2000'
+        if 'SKIP_PRICE_HISTORY_TABLE' not in os.environ:
+            os.environ['SKIP_PRICE_HISTORY_TABLE'] = '1'
+        logger.info("Tryb LOW_MEMORY włączony (mniejszy RAM)")
     
     # Inicjalizujemy fetcher i chart_manager przed uruchomieniem worker thread
     global fetcher, chart_manager
@@ -127,6 +137,8 @@ def main():
             if items:
                 logger.info(f"Pobrano {len(items)} przedmiotów dla serwera {server_id} przy starcie")
                 chart_manager.add_price_data(items, server_id)
+                del items
+                gc.collect()
             else:
                 logger.warning(f"Nie pobrano danych dla serwera {server_id} przy starcie")
         except Exception as e:

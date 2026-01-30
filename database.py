@@ -229,10 +229,10 @@ class Database:
         except Exception as e:
             logger.warning(f"Nie udało się włączyć WAL mode: {e}")
         
-        # Optymalizacje dla wydajności (cache_size w KB; ujemne = strony; -64000 = 64MB)
+        # Optymalizacje (cache: -64000=64MB, -4096=4MB dla LOW_MEMORY)
         try:
             conn.execute("PRAGMA synchronous=NORMAL")
-            cache_kb = int(os.environ.get('SQLITE_CACHE_KB', '-64000'))  # -64000 = 64MB, -16000 = 16MB dla małego RAM
+            cache_kb = int(os.environ.get('SQLITE_CACHE_KB', '-64000'))
             conn.execute("PRAGMA cache_size=%d" % cache_kb)
             conn.execute("PRAGMA temp_store=MEMORY")
         except Exception as e:
@@ -277,10 +277,11 @@ class Database:
                             return
                     
                     YANG_TO_WON = 100000000
+                    skip_legacy = os.environ.get('SKIP_PRICE_HISTORY_TABLE', '').lower() in ('1', 'true', 'yes')
                     for start in range(0, len(items), batch_size):
                         chunk = items[start:start + batch_size]
                         offers_data = []
-                        history_data = []
+                        history_data = [] if not skip_legacy else []
                         for item in chunk:
                             price = None
                             currency = None
@@ -298,10 +299,11 @@ class Database:
                                     snapshot_id, server_id, item.get('name', 'Unknown'),
                                     price, price_in_won, currency, item.get('quantity', ''), item.get('seller', '')
                                 ))
-                                history_data.append((
-                                    timestamp, item.get('name', 'Unknown'),
-                                    price, price_in_won, currency, item.get('quantity', ''), item.get('seller', '')
-                                ))
+                                if not skip_legacy:
+                                    history_data.append((
+                                        timestamp, item.get('name', 'Unknown'),
+                                        price, price_in_won, currency, item.get('quantity', ''), item.get('seller', '')
+                                    ))
                         if offers_data:
                             cursor.executemany("""
                                 INSERT INTO offers 

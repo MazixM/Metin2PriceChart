@@ -29,3 +29,8 @@ WEB_PORT = int(os.environ.get('PORT', 5001))
 
 # Adres nasłuchu: '0.0.0.0' = IPv4, '::' = IPv6 (gdy VPS ma tylko IPv6)
 WEB_HOST = os.environ.get('HOST', '0.0.0.0')
+
+# Tryb oszczędzania RAM (mniejszy cache SQLite, mniejsze batchy, bez tabeli price_history, gc po serwerze)
+# Ustaw True tutaj dla małego RAM lub: export LOW_MEMORY=1
+LOW_MEMORY_DEFAULT = False
+LOW_MEMORY = os.environ.get('LOW_MEMORY', str(LOW_MEMORY_DEFAULT)).lower() in ('1', 'true', 'yes')
