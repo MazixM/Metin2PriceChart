@@ -18,6 +18,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Opcjonalnie: zapis logów do pliku (np. LOG_FILE=/var/log/metin2pricechart/app.log)
+_log_file = os.environ.get('LOG_FILE', '').strip()
+if _log_file:
+    try:
+        _dir = os.path.dirname(_log_file)
+        if _dir and not os.path.isdir(_dir):
+            os.makedirs(_dir, exist_ok=True)
+        _fh = logging.FileHandler(_log_file, encoding='utf-8')
+        _fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logging.getLogger().addHandler(_fh)
+        logger.info(f"Logi zapisywane do: {_log_file}")
+    except Exception as e:
+        logger.warning(f"Nie można zapisywać logów do pliku {_log_file}: {e}")
+
 # Wyłączamy logowanie błędów 405 przez Werkzeug (spam w logach)
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 

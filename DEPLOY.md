@@ -81,13 +81,18 @@ Uwaga: worker (aktualizacja danych) działa w `main.py`. Przy gunicorn worker **
 **Automatyczne aktualizowanie po commicie (webhook z GitHub):**
 
 1. **Uruchom aplikację przez systemd** (żeby webhook mógł zrestartować usługę):
+   - W katalogu projektu utwórz venv i zainstaluj zależności:  
+     `python3 -m venv venv && ./venv/bin/pip install -r requirements.txt`
    - Skopiuj `metin2pricechart.service.example` do `/etc/systemd/system/metin2pricechart.service`
-   - W pliku ustaw: `User`, `WorkingDirectory`, `Environment` (PORT, DATABASE_PATH, opcjonalnie LOW_MEMORY)
-   - Dodaj zmienne webhooka:
+   - W pliku ustaw: `User`, `WorkingDirectory`, **ExecStart** – **musi używać Pythona z venv** (np. `/root/Metin2PriceChart/venv/bin/python main.py`), inaczej systemowy `python3` nie widzi Flask i będzie: `No module named 'flask'`.
+   - Ustaw zmienne środowiskowe w sekcji `[Service]` (na początku startu usługi). Secret to **zwykła zmienna środowiskowa**:
      ```ini
-     Environment=DEPLOY_WEBHOOK_SECRET=wymysl_losowy_tajny_string
+     Environment=PORT=5001
+     Environment=DATABASE_PATH=/root/Metin2PriceChart/price_history.db
+     Environment=DEPLOY_WEBHOOK_SECRET=twoj_tajny_losowy_string
      Environment=DEPLOY_SERVICE=metin2pricechart
      ```
+     **Secret:** dowolny długi losowy string (np. wygeneruj: `openssl rand -hex 32`). Bez spacji – albo całość w cudzysłowach: `Environment="DEPLOY_WEBHOOK_SECRET=string ze spacjami"`. Ten sam secret wpisujesz potem w GitHubie w URL webhooka: `?secret=twoj_tajny_losowy_string`.
    - Włącz i uruchom: `sudo systemctl daemon-reload && sudo systemctl enable --now metin2pricechart`
 
 2. **Skrypt deploy** – w katalogu projektu jest `deploy.sh`. Nadaj uprawnienia: `chmod +x deploy.sh`. Opcjonalnie ustaw na VPS:
@@ -97,15 +102,30 @@ Uwaga: worker (aktualizacja danych) działa w `main.py`. Przy gunicorn worker **
 
 3. **Webhook w GitHubie:**
    - Repozytorium → **Settings** → **Webhooks** → **Add webhook**
-   - **Payload URL:** `https://twoj-vps:5001/webhook?secret=wymysl_losowy_tajny_string`  
-     (albo ten sam secret w nagłówku `X-Webhook-Secret` i URL bez `?secret=`)
+   - **Payload URL:** `https://m2pricechart.bieda.it/webhook` (bez secretu w URL)
    - **Content type:** `application/json`
+   - **Secret:** wpisz ten sam string co w systemd (`DEPLOY_WEBHOOK_SECRET`) – GitHub będzie podpisywał payload nagłówkiem `X-Hub-Signature-256`; aplikacja weryfikuje ten podpis. Secret nie trafia do URL.
    - **Events:** np. "Just the push event"
-   - **Secret:** ten sam co w DEPLOY_WEBHOOK_SECRET (opcjonalnie, GitHub podpisuje payload – nasz endpoint wymaga tylko `secret` w query lub nagłówku)
+   - Opcjonalnie: ręczne wywołanie nadal działa z `?secret=...` lub nagłówkiem `X-Webhook-Secret`.
 
 4. Po **pushu** na branch (np. `main`) GitHub wyśle POST na ten URL; aplikacja uruchomi `deploy.sh` w tle, skrypt zrobi `git pull` i `systemctl restart metin2pricechart`.
 
 **Config:** `config.py` jest w `.gitignore` – nie jest w repo i nie jest nadpisywany przy `git pull`. Przy pierwszym klonowaniu na VPS: `cp config.example.py config.py` i edytuj. Jeśli w swoim repo nadal śledzisz `config.py`, usuń go z gita (plik zostaje): `git rm --cached config.py`.
+
+**Logi:**
+
+- **Systemd:** gdy aplikacja działa jako usługa, logi trafiają do journald:
+  ```bash
+  journalctl -u metin2pricechart -f      # na żywo
+  journalctl -u metin2pricechart -n 200  # ostatnie 200 linii
+  ```
+- **Plik logów:** w jednostce systemd ustaw `Environment=LOG_FILE=/var/log/metin2pricechart/app.log` (katalog zostanie utworzony przy starcie). Wtedy logi są też w pliku.
+- **Podgląd w przeglądarce:** jeśli ustawisz `LOG_FILE` i ten sam secret co webhook (lub `LOG_SECRET`), możesz podejrzeć ostatnie linie przez API:
+  ```
+  GET /api/logs?secret=TAJNY_STRING
+  GET /api/logs?secret=...&lines=50
+  ```
+  Odpowiedź JSON: `{ "lines": ["...", ...], "path": "..." }`. Secret: ten sam co `DEPLOY_WEBHOOK_SECRET` albo osobno `LOG_SECRET`.
 
 **Tylko IPv6 (VPS bez IPv4):**
 
@@ -173,10 +193,7 @@ Uwaga: worker (aktualizacja danych) działa w `main.py`. Przy gunicorn worker **
    - Railway automatycznie wykryje Python
    - Doda zmienną środowiskową `PORT`
    - Uruchomi `main.py`
-
-4. **Background Worker:**
-   - W ustawieniach projektu dodaj nowy service
-   - Start Command: `python -c "from main import data_update_worker; data_update_worker()"`
+   - Background worker działa w tym samym procesie co web (w `main.py`), nie dodawaj osobnego worker service.
 
 ### 3. Heroku (Płatne)
 

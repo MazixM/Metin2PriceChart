@@ -2,6 +2,8 @@
 Web interface dla aplikacji Metin2 Price Chart
 """
 import os
+import hmac
+import hashlib
 import subprocess
 from flask import Flask, render_template, jsonify, request
 from chart_manager import ChartManager
@@ -218,19 +220,35 @@ def get_latest_data():
     })
 
 
+def _webhook_secret_ok(secret: str) -> bool:
+    """Weryfikacja secretu: GitHub X-Hub-Signature-256 albo ?secret= / X-Webhook-Secret."""
+    if not secret:
+        return False
+    # GitHub: Secret w ustawieniach webhooka, podpis w nagłówku (nie w URL)
+    sig_header = request.headers.get('X-Hub-Signature-256', '').strip()
+    if sig_header and sig_header.startswith('sha256='):
+        expected = 'sha256=' + hmac.new(
+            secret.encode('utf-8'),
+            request.get_data(),
+            hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(sig_header, expected)
+    # Fallback: secret w query lub nagłówku (np. ręczne wywołanie)
+    provided = (request.args.get('secret') or request.headers.get('X-Webhook-Secret') or '').strip()
+    return hmac.compare_digest(provided, secret)
+
+
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook_deploy():
     """
     Webhook do automatycznego deployu po pushu (np. z GitHub).
-    Wymaga ustawienia DEPLOY_WEBHOOK_SECRET (np. losowy string).
-    GET zwraca 405 (tylko POST uruchamia deploy).
+    Secret: w GitHub → Settings → Webhooks → Secret (podpis X-Hub-Signature-256)
+    albo w URL: ?secret=... / nagłówek X-Webhook-Secret (fallback).
     """
     secret = os.environ.get('DEPLOY_WEBHOOK_SECRET', '').strip()
     if not secret:
         return jsonify({'error': 'Webhook nie skonfigurowany (brak DEPLOY_WEBHOOK_SECRET)'}), 503
-    # Sprawdzenie secretu: query ?secret=... lub header X-Webhook-Secret
-    provided = request.args.get('secret') or request.headers.get('X-Webhook-Secret') or ''
-    if provided != secret:
+    if not _webhook_secret_ok(secret):
         return jsonify({'error': 'Nieprawidłowy secret'}), 403
     if request.method != 'POST':
         return jsonify({'error': 'Użyj POST'}), 405
@@ -252,6 +270,35 @@ def webhook_deploy():
         return jsonify({'ok': True, 'message': 'Deploy uruchomiony'}), 200
     except Exception as e:
         logger.exception("Webhook: błąd uruchomienia deploy")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/logs')
+def get_logs():
+    """
+    Podgląd ostatnich linii z pliku logów (gdy ustawiono LOG_FILE).
+    Wymaga secret: ?secret=... lub nagłówek X-Log-Secret (ten sam co DEPLOY_WEBHOOK_SECRET lub LOG_SECRET).
+    """
+    secret = os.environ.get('LOG_SECRET', '').strip() or os.environ.get('DEPLOY_WEBHOOK_SECRET', '').strip()
+    if not secret:
+        return jsonify({'error': 'Brak konfiguracji (LOG_SECRET lub DEPLOY_WEBHOOK_SECRET)'}), 503
+    provided = (request.args.get('secret') or request.headers.get('X-Log-Secret') or '').strip()
+    if provided != secret:
+        return jsonify({'error': 'Nieprawidłowy secret', 'hint': 'Wartość w URL musi być identyczna jak w systemd (bez spacji). Oczekiwana długość: %d' % len(secret)}), 403
+    log_file = os.environ.get('LOG_FILE', '').strip()
+    if not log_file or not os.path.isfile(log_file):
+        return jsonify({
+            'message': 'Brak pliku logów. Ustaw LOG_FILE w systemd albo zobacz: journalctl -u metin2pricechart -n 200',
+            'lines': []
+        }), 200
+    try:
+        with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        last = int(request.args.get('lines', 100))
+        last = min(max(1, last), 500)
+        tail = lines[-last:]
+        return jsonify({'lines': tail, 'path': log_file})
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
