@@ -43,7 +43,7 @@ def set_chart_manager(manager):
 @app.route('/', methods=['GET'])
 def index():
     """Strona główna z listą przedmiotów"""
-    return render_template('index.html')
+    return render_template('index.html', version=config.APP_VERSION, github_repo=config.GITHUB_REPO)
 
 @app.route('/', methods=['POST', 'PUT', 'DELETE', 'PATCH'])
 def index_method_not_allowed():

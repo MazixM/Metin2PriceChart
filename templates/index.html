@@ -77,6 +77,23 @@
             background: #5568d3;
         }
         
+        .app-version {
+            position: fixed;
+            bottom: 10px;
+            right: 14px;
+            font-size: 12px;
+            color: rgba(255,255,255,0.85);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
+        .app-version a {
+            color: rgba(255,255,255,0.9);
+            text-decoration: none;
+        }
+        .app-version a:hover {
+            text-decoration: underline;
+        }
+        
         .btn-secondary {
             background: #6c757d;
         }
@@ -264,6 +281,13 @@
     </style>
 </head>
 <body>
+    <div class="app-version" title="Wersja z repozytorium">
+        {% if github_repo %}
+        <a href="{{ github_repo }}/commit/{{ version }}" target="_blank" rel="noopener">v {{ version }}</a>
+        {% else %}
+        v {{ version }}
+        {% endif %}
+    </div>
     <div class="container">
         <h1>Metin2 Price Chart</h1>
         <p class="subtitle">Monitor cen przedmiotów w czasie rzeczywistym</p>
