@@ -108,6 +108,10 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_offers_snapshot_item_price ON offers(snapshot_id, item_name, price_in_won)
             """)
+            # Indeks dla paginacji: DISTINCT item_name ... ORDER BY item_name LIMIT/OFFSET
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_offers_snapshot_server_item ON offers(snapshot_id, server_id, item_name)
+            """)
             
             conn.commit()
             logger.info(f"Baza danych zainicjalizowana: {self.db_path}")
@@ -588,7 +592,149 @@ class Database:
                 return [], 0
         
         return [], 0
-        
+    
+    def _aggregate_offers_to_items(self, latest_offers: List[Dict]) -> tuple[List[Dict], int]:
+        """Z ofert buduje listę przedmiotów (min cena/szt) i łączną ilość. Używane przez get_latest_data*."""
+        total_quantity = 0
+        offers_by_item: Dict[str, list] = {}
+        for offer in latest_offers:
+            item_name = offer.get('item_name', 'Unknown')
+            if item_name not in offers_by_item:
+                offers_by_item[item_name] = []
+            price_in_won = float(offer.get('price_in_won', 0))
+            quantity_str = str(offer.get('quantity', '1')).strip()
+            quantity_clean = ''.join(c for c in quantity_str if c.isdigit())
+            quantity = int(quantity_clean) if quantity_clean else 1
+            if quantity <= 0:
+                quantity = 1
+            if price_in_won > 0 and quantity > 0:
+                price_per_unit = price_in_won / quantity
+                offers_by_item[item_name].append({
+                    'price_per_unit': price_per_unit,
+                    'price_in_won': price_in_won,
+                    'quantity': quantity,
+                    'offer': offer,
+                })
+                total_quantity += quantity
+        latest_data = []
+        for item_name, offers in offers_by_item.items():
+            if not offers:
+                continue
+            prices_per_unit = [o['price_per_unit'] for o in offers]
+            min_offer = min(offers, key=lambda x: x['price_per_unit'])
+            rep = min_offer['offer']
+            latest_data.append({
+                'item_name': item_name,
+                'timestamp': rep.get('timestamp'),
+                'price': rep.get('price'),
+                'price_in_won': rep.get('price_in_won'),
+                'currency': rep.get('currency'),
+                'quantity': rep.get('quantity'),
+                'seller': rep.get('seller'),
+                'min_price_per_unit': min(prices_per_unit),
+                'max_price_per_unit': max(prices_per_unit),
+                'avg_price_per_unit': sum(prices_per_unit) / len(prices_per_unit),
+            })
+        latest_data.sort(key=lambda x: x.get('item_name', ''))
+        return latest_data, total_quantity
+    
+    def get_latest_data_paginated(self, server_id: int, limit: int = 10, offset: int = 0) -> tuple[List[Dict], int, int]:
+        """
+        Zwraca stronę najnowszych danych (limit pozycji, od offset).
+        Returns: (lista wpisów dla przedmiotów, total_count wszystkich przedmiotów, total_quantity na stronie)
+        """
+        max_retries = 3
+        retry_delay = 0.05
+        for attempt in range(max_retries):
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT id FROM snapshots WHERE server_id = ? ORDER BY timestamp DESC LIMIT 1",
+                        (server_id,),
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return [], 0, 0
+                    snapshot_id = row['id']
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT item_name) FROM offers
+                        WHERE snapshot_id = ? AND server_id = ? AND price_in_won > 0
+                        """,
+                        (snapshot_id, server_id),
+                    )
+                    total_count = cursor.fetchone()[0]
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT item_name FROM offers
+                        WHERE snapshot_id = ? AND server_id = ? AND price_in_won > 0
+                        ORDER BY item_name ASC
+                        LIMIT ? OFFSET ?
+                        """,
+                        (snapshot_id, server_id, limit, offset),
+                    )
+                    page_names = [r['item_name'] for r in cursor.fetchall()]
+                    if not page_names:
+                        return [], total_count, 0
+                    placeholders = ','.join(['?'] * len(page_names))
+                    cursor.execute(
+                        """
+                        SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
+                        FROM offers o
+                        INNER JOIN snapshots s ON o.snapshot_id = s.id
+                        WHERE o.snapshot_id = ? AND o.server_id = ? AND o.item_name IN ({}) AND o.price_in_won > 0
+                        """.format(placeholders),
+                        [snapshot_id, server_id] + page_names,
+                    )
+                    latest_offers = [dict(r) for r in cursor.fetchall()]
+                    latest_data, total_quantity = self._aggregate_offers_to_items(latest_offers)
+                    return latest_data, total_count, total_quantity
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise
+        return [], 0, 0
+    
+    def get_latest_data_for_items(self, server_id: int, item_names: List[str]) -> tuple[List[Dict], int]:
+        """Zwraca najnowsze dane tylko dla podanych nazw przedmiotów. Returns (list, total_quantity)."""
+        if not item_names:
+            return [], 0
+        max_retries = 3
+        retry_delay = 0.05
+        for attempt in range(max_retries):
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT id FROM snapshots WHERE server_id = ? ORDER BY timestamp DESC LIMIT 1",
+                        (server_id,),
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return [], 0
+                    snapshot_id = row['id']
+                    placeholders = ','.join(['?'] * len(item_names))
+                    cursor.execute(
+                        """
+                        SELECT s.timestamp, o.item_name, o.price, o.price_in_won, o.currency, o.quantity, o.seller
+                        FROM offers o
+                        INNER JOIN snapshots s ON o.snapshot_id = s.id
+                        WHERE o.snapshot_id = ? AND o.server_id = ? AND o.item_name IN ({}) AND o.price_in_won > 0
+                        """.format(placeholders),
+                        [snapshot_id, server_id] + item_names,
+                    )
+                    latest_offers = [dict(r) for r in cursor.fetchall()]
+                    latest_data, total_quantity = self._aggregate_offers_to_items(latest_offers)
+                    return latest_data, total_quantity
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise
         return [], 0
     
     def get_unique_items(self, server_id: int) -> List[str]:
@@ -610,14 +756,17 @@ class Database:
             
             return [row['item_name'] for row in cursor.fetchall()]
     
-    def search_items(self, query: str, server_id: int) -> List[str]:
+    def search_items(self, query: str, server_id: int, limit: int = 100) -> List[str]:
         """
-        Wyszukuje przedmioty po nazwie dla danego serwera
+        Wyszukuje przedmioty po nazwie dla danego serwera (tylko nazwy – lekka odpowiedź).
         
         Args:
             query: Fraza do wyszukania (case-insensitive)
             server_id: ID serwera (np. 426, 702)
+            limit: Maks. liczba wyników (domyślnie 100)
         """
+        if not query or not query.strip():
+            return []
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -627,8 +776,8 @@ class Database:
                 AND o.server_id = ?
                 AND o.price_in_won > 0
                 ORDER BY o.item_name ASC
-            """, (f'%{query}%', server_id))
-            
+                LIMIT ?
+            """, (f'%{query.strip()}%', server_id, limit))
             return [row['item_name'] for row in cursor.fetchall()]
     
     def get_statistics(self, server_id: int) -> Dict:

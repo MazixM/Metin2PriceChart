@@ -313,6 +313,10 @@
         </div>
         
         <div id="itemsContainer" class="items-grid"></div>
+        <div id="paginationBar" style="display: none; text-align: center; margin: 20px 0;">
+            <button type="button" class="btn" id="loadMoreBtn" onclick="loadMoreItems()">Załaduj więcej</button>
+            <span id="paginationInfo" style="margin-left: 15px; color: #666; font-size: 14px;"></span>
+        </div>
         
         <div id="chartContainer" class="chart-container" style="display: none;">
             <div class="chart-wrapper">
@@ -328,12 +332,17 @@
     </div>
     
     <script>
+        const PAGE_SIZE = 10;
         let selectedItem = null;
         let allItems = [];
-        let currentPriceType = 'min'; // Domyślnie minimalna
-        let autoRefreshInterval = null; // Interwał automatycznego odświeżania
-        let currentServerId = 426; // Domyślny serwer
-        let availableServers = {}; // Lista dostępnych serwerów
+        let currentPriceType = 'min';
+        let autoRefreshInterval = null;
+        let currentServerId = 426;
+        let availableServers = {};
+        let listOffset = 0;
+        let listTotalCount = 0;
+        let isSearchMode = false;
+        let cachedSearchData = []; // Wyniki wyszukiwania (już z cenami) – paginacja po stronie klienta
         
         // Funkcja formatowania ceny w won do formatu "X,XXw"
         function formatPriceInWon(priceInWon) {
@@ -459,80 +468,162 @@
         
         async function loadAllItems() {
             try {
-                // Jeśli przedmiot jest wybrany, NIE przeładowujemy historii wykresu przy auto-refresh
-                // (historia wykresu jest już załadowana i nie zmienia się tak często)
-                if (selectedItem) {
-                    // Przy auto-refresh tylko aktualizujemy listę przedmiotów, nie wykres
-                    // Wykres ładujemy tylko ręcznie przy wyborze przedmiotu
-                    return;
-                }
-                
-                // Ładujemy tylko najnowsze ceny (bez statystyk - szybciej)
-                const response = await fetch(`/api/latest?server_id=${currentServerId}`);
+                if (selectedItem) return;
+                isSearchMode = false;
+                cachedSearchData = [];
+                listOffset = 0;
+                const response = await fetch(`/api/latest?server_id=${currentServerId}&limit=${PAGE_SIZE}&offset=0`);
                 const data = await response.json();
-                
                 if (data.data && data.data.length > 0) {
+                    listTotalCount = data.total_count !== undefined ? data.total_count : data.data.length;
                     displayItems(data.data);
-                    // Używamy total_quantity jeśli dostępne, w przeciwnym razie count
-                    const availableQuantity = data.total_quantity !== undefined ? data.total_quantity : data.data.length;
-                    updateStats(data.data.length, null, availableQuantity);
+                    updatePagination(listTotalCount, data.data.length, data.total_quantity);
+                    updateStats(listTotalCount, null, data.total_quantity || 0);
                     if (data.last_update) {
-                        document.getElementById('lastUpdate').textContent = 
+                        document.getElementById('lastUpdate').textContent =
                             `Ostatnia aktualizacja: ${new Date(data.last_update).toLocaleString('pl-PL')}`;
                     }
                 } else {
+                    listTotalCount = 0;
+                    hidePagination();
                     const message = data.message || 'Brak danych. Poczekaj na pierwszą aktualizację (może potrwać do 5 minut).';
-                    document.getElementById('itemsContainer').innerHTML = 
+                    document.getElementById('itemsContainer').innerHTML =
                         `<div class="no-data">${message}<br><small>Worker pobiera dane co 5 minut dla wszystkich serwerów.</small></div>`;
                 }
             } catch (error) {
                 console.error('Błąd ładowania danych:', error);
                 if (!selectedItem && !document.getElementById('itemsContainer').querySelector('.item-card')) {
-                    document.getElementById('itemsContainer').innerHTML = 
+                    document.getElementById('itemsContainer').innerHTML =
                         `<div class="no-data">Błąd ładowania danych: ${error.message}</div>`;
                 }
             }
         }
         
+        async function loadMoreItems() {
+            if (isSearchMode) {
+                const from = listOffset;
+                const slice = cachedSearchData.slice(from, from + PAGE_SIZE);
+                if (slice.length === 0) return;
+                appendItems(slice);
+                listOffset += slice.length;
+                updatePagination(cachedSearchData.length, listOffset, null);
+                if (listOffset >= cachedSearchData.length) {
+                    document.getElementById('loadMoreBtn').style.display = 'none';
+                }
+                return;
+            }
+            try {
+                const offset = document.getElementById('itemsContainer').querySelectorAll('.item-card').length;
+                const response = await fetch(`/api/latest?server_id=${currentServerId}&limit=${PAGE_SIZE}&offset=${offset}`);
+                const data = await response.json();
+                if (data.data && data.data.length > 0) {
+                    appendItems(data.data);
+                    listOffset = offset + data.data.length;
+                    updatePagination(listTotalCount, listOffset, null);
+                    if (listOffset >= listTotalCount) {
+                        document.getElementById('loadMoreBtn').style.display = 'none';
+                    }
+                }
+            } catch (error) {
+                console.error('Błąd ładowania kolejnych danych:', error);
+            }
+        }
+        
+        function updatePagination(totalCount, displayedCount, totalQuantity) {
+            const bar = document.getElementById('paginationBar');
+            const btn = document.getElementById('loadMoreBtn');
+            const info = document.getElementById('paginationInfo');
+            if (totalCount <= PAGE_SIZE && !isSearchMode) {
+                bar.style.display = 'none';
+                return;
+            }
+            bar.style.display = 'block';
+            const hasMore = displayedCount < totalCount;
+            btn.style.display = hasMore ? 'inline-block' : 'none';
+            btn.textContent = 'Załaduj więcej';
+            info.textContent = `Wyświetlono ${displayedCount} z ${totalCount} przedmiotów`;
+        }
+        
+        function hidePagination() {
+            document.getElementById('paginationBar').style.display = 'none';
+        }
+        
+        function appendItems(items) {
+            const container = document.getElementById('itemsContainer');
+            items.forEach(item => {
+                const card = buildItemCard(item);
+                container.appendChild(card);
+            });
+        }
+        
+        function buildItemCard(item) {
+            const card = document.createElement('div');
+            card.className = 'item-card';
+            card.onclick = () => selectItem(item.item_name);
+            let priceInWon = item.price_in_won;
+            if (priceInWon === undefined || priceInWon === null) {
+                if (item.price !== undefined && item.price !== null) {
+                    priceInWon = item.currency === 'yang' ? item.price / 100000000 : item.price;
+                } else {
+                    priceInWon = 0;
+                }
+            }
+            if (typeof priceInWon === 'string') priceInWon = parseFloat(priceInWon) || 0;
+            let quantity = 1;
+            const quantityStr = String(item.quantity || '1').trim();
+            const quantityClean = quantityStr.replace(/\D/g, '');
+            quantity = parseInt(quantityClean) || 1;
+            if (quantity <= 0) quantity = 1;
+            const pricePerUnit = priceInWon > 0 ? priceInWon / quantity : 0;
+            const priceFor200 = pricePerUnit * 200;
+            const formattedPrice = formatPriceInWon(pricePerUnit);
+            const formattedPrice200 = formatPriceInWon(priceFor200);
+            const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString('pl-PL') : '-';
+            card.innerHTML = `
+                <div class="item-name">${item.item_name || 'Unknown'}</div>
+                <div class="item-price">${formattedPrice} / szt</div>
+                <div class="item-info" style="color: #667eea; font-weight: 600;">${formattedPrice200} / 200 szt</div>
+                <div class="item-info">Ilość: ${item.quantity || '-'}</div>
+                <div class="item-info">Sprzedawca: ${item.seller || '-'}</div>
+                <div class="item-info" style="margin-top: 8px; font-size: 11px;">${timestamp}</div>
+            `;
+            return card;
+        }
+        
         async function searchItems() {
             const query = document.getElementById('searchInput').value.trim();
-            
             if (!query) {
                 loadAllItems();
                 return;
             }
-            
             try {
                 const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&server_id=${currentServerId}`);
                 const data = await response.json();
-                
-                if (data.items && data.items.length > 0) {
-                    // Pobieramy najnowsze dane dla wszystkich przedmiotów
-                    const latestResponse = await fetch(`/api/latest?server_id=${currentServerId}`);
-                    const latestData = await latestResponse.json();
-                    
-                    // Filtrujemy tylko znalezione przedmioty
-                    const itemsData = latestData.data.filter(d => 
-                        data.items.includes(d.item_name)
-                    );
-                    
-                    // Obliczamy łączną ilość dostępnych sztuk dla przefiltrowanych przedmiotów
-                    let totalQuantity = 0;
-                    itemsData.forEach(item => {
-                        const quantityStr = String(item.quantity || '1').trim();
-                        const quantityClean = quantityStr.replace(/\D/g, '');
-                        const quantity = parseInt(quantityClean) || 1;
-                        if (quantity > 0) {
-                            totalQuantity += quantity;
-                        }
-                    });
-                    
-                    displayItems(itemsData);
-                    updateStats(itemsData.length, null, totalQuantity);
-                } else {
-                    document.getElementById('itemsContainer').innerHTML = 
+                if (!data.items || data.items.length === 0) {
+                    document.getElementById('itemsContainer').innerHTML =
                         '<div class="no-data">Nie znaleziono przedmiotów pasujących do wyszukiwania.</div>';
+                    hidePagination();
+                    return;
                 }
+                const names = data.items;
+                const itemsParam = names.map(n => encodeURIComponent(n)).join(',');
+                const latestResponse = await fetch(`/api/latest?server_id=${currentServerId}&items=${itemsParam}`);
+                const latestData = await latestResponse.json();
+                if (!latestData.data || latestData.data.length === 0) {
+                    document.getElementById('itemsContainer').innerHTML =
+                        '<div class="no-data">Brak aktualnych cen dla znalezionych przedmiotów.</div>';
+                    hidePagination();
+                    return;
+                }
+                isSearchMode = true;
+                cachedSearchData = latestData.data;
+                listOffset = 0;
+                const firstPage = cachedSearchData.slice(0, PAGE_SIZE);
+                displayItems(firstPage);
+                listOffset = firstPage.length;
+                listTotalCount = cachedSearchData.length;
+                updatePagination(cachedSearchData.length, listOffset, latestData.total_quantity);
+                updateStats(cachedSearchData.length, null, latestData.total_quantity || 0);
             } catch (error) {
                 console.error('Błąd wyszukiwania:', error);
             }
@@ -541,67 +632,11 @@
         function displayItems(items) {
             const container = document.getElementById('itemsContainer');
             container.innerHTML = '';
-            
             if (!items || items.length === 0) {
                 container.innerHTML = '<div class="no-data">Brak przedmiotów do wyświetlenia</div>';
                 return;
             }
-            
-            items.forEach(item => {
-                const card = document.createElement('div');
-                card.className = 'item-card';
-                card.onclick = () => selectItem(item.item_name);
-                
-                // Używamy price_in_won jeśli dostępne, w przeciwnym razie normalizujemy
-                let priceInWon = item.price_in_won;
-                if (priceInWon === undefined || priceInWon === null) {
-                    if (item.price !== undefined && item.price !== null) {
-                        // Konwersja: jeśli yang, dzielimy przez 100000000
-                        if (item.currency === 'yang') {
-                            priceInWon = item.price / 100000000;
-                        } else {
-                            priceInWon = item.price;
-                        }
-                    } else {
-                        priceInWon = 0;
-                    }
-                }
-                
-                // Konwertujemy na liczbę jeśli to string
-                if (typeof priceInWon === 'string') {
-                    priceInWon = parseFloat(priceInWon) || 0;
-                }
-                
-                // Obliczamy cenę za 1 sztukę (priceInWon to cena za całą ofertę)
-                let quantity = 1;
-                const quantityStr = String(item.quantity || '1').trim();
-                const quantityClean = quantityStr.replace(/\D/g, ''); // Usuwamy wszystko oprócz cyfr
-                quantity = parseInt(quantityClean) || 1;
-                if (quantity <= 0) quantity = 1;
-                
-                // Cena za 1 sztukę
-                const pricePerUnit = priceInWon > 0 ? priceInWon / quantity : 0;
-                // Obliczamy cenę za 200 sztuk z dokładnej wartości pricePerUnit (przed zaokrągleniem)
-                const priceFor200 = pricePerUnit * 200;
-                
-                // Formatujemy z odpowiednią precyzją
-                // Dla ceny per sztukę używamy 2 miejsc po przecinku
-                const formattedPrice = formatPriceInWon(pricePerUnit);
-                // Dla ceny za 200 sztuk używamy 2 miejsc po przecinku (obliczone z dokładnej wartości)
-                const formattedPrice200 = formatPriceInWon(priceFor200);
-                const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString('pl-PL') : '-';
-                
-                card.innerHTML = `
-                    <div class="item-name">${item.item_name || 'Unknown'}</div>
-                    <div class="item-price">${formattedPrice} / szt</div>
-                    <div class="item-info" style="color: #667eea; font-weight: 600;">${formattedPrice200} / 200 szt</div>
-                    <div class="item-info">Ilość: ${item.quantity || '-'}</div>
-                    <div class="item-info">Sprzedawca: ${item.seller || '-'}</div>
-                    <div class="item-info" style="margin-top: 8px; font-size: 11px;">${timestamp}</div>
-                `;
-                
-                container.appendChild(card);
-            });
+            items.forEach(item => container.appendChild(buildItemCard(item)));
         }
         
         async function selectItem(itemName) {
