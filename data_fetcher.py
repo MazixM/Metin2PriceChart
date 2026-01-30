@@ -1,20 +1,12 @@
 """
-Moduł do pobierania danych o cenach ulepszaczy ze strony metin2alerts.com
+Moduł do pobierania danych o cenach ulepszaczy z API metin2alerts.com (HTTP, bez przeglądarki).
 """
 import requests
-from bs4 import BeautifulSoup
 import json
 import time
 import random
 import os
 from typing import List, Dict, Optional
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 import logging
 import config
 
@@ -36,33 +28,9 @@ class Metin2DataFetcher:
             'http': None,
             'https': None,
         }
-        self.driver = None
         # Cache dla tłumaczeń nazw przedmiotów (vnum -> polska nazwa)
         self._translation_cache: Optional[Dict[str, str]] = None
         
-    def _init_selenium(self):
-        """Inicjalizacja Selenium WebDriver"""
-        if self.driver is None:
-            chrome_options = Options()
-            chrome_options.add_argument('--headless')
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--disable-dev-shm-usage')
-            chrome_options.add_argument('--disable-gpu')
-            # Opcje dla środowiska chmurowego (Render, Railway, Heroku)
-            chrome_options.add_argument('--disable-software-rasterizer')
-            chrome_options.add_argument('--disable-extensions')
-            chrome_options.add_argument('--single-process')  # Dla ograniczonej pamięci
-            chrome_options.add_argument('--remote-debugging-port=9222')
-            
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-    def _close_selenium(self):
-        """Zamknięcie Selenium WebDriver"""
-        if self.driver:
-            self.driver.quit()
-            self.driver = None
-    
     def _load_translations(self) -> Dict[str, str]:
         """
         Ładuje tłumaczenia nazw przedmiotów z pliku item_names.json
@@ -234,141 +202,6 @@ class Metin2DataFetcher:
             
         return None
     
-    def fetch_data_selenium(self, server_name: Optional[str] = None) -> List[Dict]:
-        """
-        Pobieranie danych używając Selenium (dla dynamicznych stron)
-        """
-        try:
-            self._init_selenium()
-            
-            # Włączamy logowanie sieciowe, żeby przechwycić requesty API
-            self.driver.execute_cdp_cmd('Network.enable', {})
-            
-            self.driver.get(self.store_url)
-            
-            # Czekamy na załadowanie danych
-            wait = WebDriverWait(self.driver, 30)
-            
-            # Próbujemy przechwycić requesty API
-            try:
-                logs = self.driver.get_log('performance')
-                for log in logs:
-                    message = json.loads(log['message'])['message']
-                    if message['method'] == 'Network.responseReceived':
-                        url = message['params']['response']['url']
-                        if 'api' in url.lower() or 'store' in url.lower():
-                            try:
-                                response = self.driver.execute_cdp_cmd('Network.getResponseBody', {
-                                    'requestId': message['params']['requestId']
-                                })
-                                if 'body' in response:
-                                    api_data = json.loads(response['body'])
-                                    parsed_items = self._parse_api_data(api_data, None)
-                                    if parsed_items:
-                                        logger.info(f"Znaleziono dane przez Network API: {url}")
-                                        return parsed_items
-                            except:
-                                pass
-            except Exception as e:
-                logger.debug(f"Nie udało się przechwycić requestów API: {e}")
-            
-            # Czekamy na załadowanie tabeli z danymi
-            try:
-                wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-            except:
-                logger.warning("Nie znaleziono tabeli z danymi")
-            
-            # Jeśli podano serwer, wybieramy go
-            if server_name:
-                try:
-                    server_button = self.driver.find_element(By.XPATH, f"//button[contains(text(), '{server_name}')]")
-                    server_button.click()
-                    time.sleep(2)  # Czekamy na załadowanie danych
-                except:
-                    logger.warning(f"Nie znaleziono serwera: {server_name}")
-            
-            # Pobieramy HTML strony
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # Próbujemy znaleźć dane w różnych formatach
-            items = []
-            
-            # Metoda 1: Szukamy tabeli z danymi
-            tables = soup.find_all('table')
-            for table in tables:
-                rows = table.find_all('tr')
-                for row in rows[1:]:  # Pomijamy nagłówek
-                    cols = row.find_all(['td', 'th'])
-                    if len(cols) >= 4:
-                        try:
-                            # Próbujemy różne układy kolumn
-                            item_data = {
-                                'name': '',
-                                'quantity': '',
-                                'yang': '',
-                                'won': '',
-                                'seller': '',
-                                'timestamp': time.time()
-                            }
-                            
-                            # Szukamy nazwy przedmiotu (może być w różnych kolumnach)
-                            for col in cols:
-                                text = col.get_text(strip=True)
-                                # Sprawdzamy czy to może być nazwa przedmiotu
-                                if text and len(text) > 2 and not text.replace(',', '').replace('.', '').isdigit():
-                                    if not item_data['name']:
-                                        item_data['name'] = text
-                            
-                            # Szukamy cen (yang/won) - zwykle są to liczby
-                            for i, col in enumerate(cols):
-                                text = col.get_text(strip=True).replace(',', '').replace('.', '')
-                                if text.isdigit() and int(text) > 0:
-                                    # Jeśli jeszcze nie mamy yang, to prawdopodobnie yang
-                                    if not item_data['yang']:
-                                        item_data['yang'] = text
-                                    elif not item_data['won']:
-                                        item_data['won'] = text
-                            
-                            # Szukamy ilości
-                            for col in cols:
-                                text = col.get_text(strip=True)
-                                if text.isdigit() or (text.replace('x', '').isdigit()):
-                                    if not item_data['quantity']:
-                                        item_data['quantity'] = text
-                            
-                            if item_data['name'] and (item_data['yang'] or item_data['won']):
-                                items.append(item_data)
-                        except Exception as e:
-                            logger.debug(f"Błąd parsowania wiersza: {e}")
-                            continue
-            
-            # Metoda 2: Próbujemy znaleźć dane w JavaScript/JSON
-            try:
-                scripts = soup.find_all('script')
-                for script in scripts:
-                    script_text = script.string
-                    if script_text and ('items' in script_text.lower() or 'data' in script_text.lower()):
-                        # Próbujemy wyciągnąć JSON z JavaScript
-                        import re
-                        json_matches = re.findall(r'\{[^{}]*"items"[^{}]*\}', script_text)
-                        for match in json_matches:
-                            try:
-                                data = json.loads(match)
-                                if 'items' in data:
-                                    items.extend(self._parse_api_data(data, None))
-                            except:
-                                pass
-            except Exception as e:
-                logger.debug(f"Błąd podczas parsowania JavaScript: {e}")
-            
-            logger.info(f"Pobrano {len(items)} przedmiotów")
-            return items
-            
-        except Exception as e:
-            logger.error(f"Błąd podczas pobierania danych przez Selenium: {e}")
-            return []
-    
     def fetch_upgrade_items(self, server_name: Optional[str] = None, 
                            item_names: Optional[List[str]] = None,
                            server_id: Optional[int] = None) -> List[Dict]:
@@ -376,7 +209,7 @@ class Metin2DataFetcher:
         Pobiera dane o przedmiotach ze sklepu
         
         Args:
-            server_name: Nazwa serwera (opcjonalnie, dla Selenium fallback)
+            server_name: Nazwa serwera (nieużywane, zachowane dla kompatybilności API)
             item_names: Lista nazw przedmiotów do filtrowania (opcjonalnie, None = wszystkie przedmioty)
             server_id: ID serwera dla API (np. 426). Jeśli None, używa domyślnego.
         
@@ -399,19 +232,8 @@ class Metin2DataFetcher:
                 if isinstance(api_data, dict):
                     logger.warning(f"Dostępne klucze: {list(api_data.keys())}")
         
-        # Jeśli API nie działa, używamy Selenium jako fallback
-        logger.info("API nie zwróciło danych, próba użycia Selenium...")
-        all_items = self.fetch_data_selenium(server_name)
-        
-        # Filtrujemy ulepszacze jeśli podano listę
-        if item_names:
-            upgrade_items = [
-                item for item in all_items 
-                if any(name.lower() in item.get('name', '').lower() for name in item_names)
-            ]
-            return upgrade_items
-        
-        return all_items
+        logger.warning("API nie zwróciło danych. Pobieranie tylko przez HTTP (bez przeglądarki).")
+        return []
     
     def _parse_api_data(self, api_data, item_names: Optional[List[str]] = None) -> List[Dict]:
         """
@@ -605,6 +427,3 @@ class Metin2DataFetcher:
             logger.debug(f"Filtrowanie: {items_before_filter} przedmiotów przed filtrem, {items_after_filter} po filtrze, {len(items)} ostatecznie sparsowanych")
         return items
     
-    def __del__(self):
-        """Destruktor - zamyka Selenium"""
-        self._close_selenium()

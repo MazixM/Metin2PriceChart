@@ -229,11 +229,12 @@ class Database:
         except Exception as e:
             logger.warning(f"Nie udało się włączyć WAL mode: {e}")
         
-        # Optymalizacje dla wydajności
+        # Optymalizacje dla wydajności (cache_size w KB; ujemne = strony; -64000 = 64MB)
         try:
-            conn.execute("PRAGMA synchronous=NORMAL")  # Szybsze niż FULL, bezpieczniejsze niż OFF
-            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
-            conn.execute("PRAGMA temp_store=MEMORY")  # Tymczasowe dane w pamięci
+            conn.execute("PRAGMA synchronous=NORMAL")
+            cache_kb = int(os.environ.get('SQLITE_CACHE_KB', '-64000'))  # -64000 = 64MB, -16000 = 16MB dla małego RAM
+            conn.execute("PRAGMA cache_size=%d" % cache_kb)
+            conn.execute("PRAGMA temp_store=MEMORY")
         except Exception as e:
             logger.warning(f"Nie udało się ustawić PRAGMA: {e}")
         
@@ -252,8 +253,9 @@ class Database:
         """
         timestamp = datetime.now().isoformat()
         added_count = 0
+        batch_size = int(os.environ.get('BATCH_INSERT_SIZE', '5000'))  # Dla małego RAM (384 MB): 3000
+        batch_size = max(1000, min(batch_size, 50000))
         
-        # Używamy retry logic dla operacji na bazie (obsługa "database is locked")
         max_retries = 5
         retry_delay = 0.1
         
@@ -261,14 +263,10 @@ class Database:
             try:
                 with self._get_connection() as conn:
                     cursor = conn.cursor()
-                    
-                    # Tworzymy snapshot (lub pobieramy istniejący jeśli już jest dla tego serwera)
                     cursor.execute("""
                         INSERT OR IGNORE INTO snapshots (server_id, timestamp) VALUES (?, ?)
                     """, (server_id, timestamp))
                     snapshot_id = cursor.lastrowid
-                    
-                    # Jeśli snapshot już istniał, pobieramy jego ID
                     if snapshot_id == 0:
                         cursor.execute("SELECT id FROM snapshots WHERE server_id = ? AND timestamp = ?", (server_id, timestamp))
                         result = cursor.fetchone()
@@ -278,73 +276,48 @@ class Database:
                             logger.error("Nie udało się utworzyć/pobrać snapshot")
                             return
                     
-                    # Przygotowujemy wszystkie dane do wstawienia (batch insert dla wydajności)
-                    offers_data = []
-                    history_data = []
-                    
-                    for item in items:
-                        # Próbujemy wyciągnąć cenę (yang lub won)
-                        price = None
-                        currency = None
-                        
-                        yang = item.get('yang', '').replace(',', '').replace('.', '').strip()
-                        won = item.get('won', '').replace(',', '').replace('.', '').strip()
-                        
-                        # Priorytet: won, potem yang
-                        if won and won.isdigit() and int(won) > 0:
-                            price = int(won)
-                            currency = 'won'
-                        elif yang and yang.isdigit() and int(yang) > 0:
-                            price = int(yang)
-                            currency = 'yang'
-                        
-                        if price is not None and price > 0:
-                            # Normalizujemy cenę do won (1 won = 100000000 yang)
-                            YANG_TO_WON = 100000000
-                            price_in_won = (price / YANG_TO_WON) if currency == 'yang' else price
-                            
-                            # Przygotowujemy dane do batch insert
-                            offers_data.append((
-                                snapshot_id,
-                                server_id,
-                                item.get('name', 'Unknown'),
-                                price,
-                                price_in_won,
-                                currency,
-                                item.get('quantity', ''),
-                                item.get('seller', '')
-                            ))
-                            
-                            # Dla kompatybilności wstecznej
-                            history_data.append((
-                                timestamp,
-                                item.get('name', 'Unknown'),
-                                price,
-                                price_in_won,
-                                currency,
-                                item.get('quantity', ''),
-                                item.get('seller', '')
-                            ))
-                    
-                    # Batch insert dla offers (znacznie szybsze niż pojedyncze INSERT)
-                    if offers_data:
-                        cursor.executemany("""
-                            INSERT INTO offers 
-                            (snapshot_id, server_id, item_name, price, price_in_won, currency, quantity, seller)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, offers_data)
-                        added_count = len(offers_data)
-                    
-                    # Batch insert dla price_history (kompatybilność wsteczna)
-                    if history_data:
-                        cursor.executemany("""
-                            INSERT INTO price_history 
-                            (timestamp, item_name, price, price_in_won, currency, quantity, seller)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """, history_data)
+                    YANG_TO_WON = 100000000
+                    for start in range(0, len(items), batch_size):
+                        chunk = items[start:start + batch_size]
+                        offers_data = []
+                        history_data = []
+                        for item in chunk:
+                            price = None
+                            currency = None
+                            yang = item.get('yang', '').replace(',', '').replace('.', '').strip()
+                            won = item.get('won', '').replace(',', '').replace('.', '').strip()
+                            if won and won.isdigit() and int(won) > 0:
+                                price = int(won)
+                                currency = 'won'
+                            elif yang and yang.isdigit() and int(yang) > 0:
+                                price = int(yang)
+                                currency = 'yang'
+                            if price is not None and price > 0:
+                                price_in_won = (price / YANG_TO_WON) if currency == 'yang' else price
+                                offers_data.append((
+                                    snapshot_id, server_id, item.get('name', 'Unknown'),
+                                    price, price_in_won, currency, item.get('quantity', ''), item.get('seller', '')
+                                ))
+                                history_data.append((
+                                    timestamp, item.get('name', 'Unknown'),
+                                    price, price_in_won, currency, item.get('quantity', ''), item.get('seller', '')
+                                ))
+                        if offers_data:
+                            cursor.executemany("""
+                                INSERT INTO offers 
+                                (snapshot_id, server_id, item_name, price, price_in_won, currency, quantity, seller)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, offers_data)
+                            added_count += len(offers_data)
+                        if history_data:
+                            cursor.executemany("""
+                                INSERT INTO price_history 
+                                (timestamp, item_name, price, price_in_won, currency, quantity, seller)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, history_data)
                     
                     conn.commit()
-                    break  # Sukces - wychodzimy z pętli retry
+                    break
                     
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:

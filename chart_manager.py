@@ -1,9 +1,7 @@
 """
-Moduł do zarządzania wykresami cen ulepszaczy
+Moduł do zarządzania wykresami cen ulepszaczy.
+Wykresy są generowane w przeglądarce (Plotly.js); ten moduł obsługuje dane i statystyki.
 """
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from datetime import datetime
 from typing import List, Dict, Optional
 import logging
@@ -73,97 +71,13 @@ class ChartManager:
             pass
         return None
     
-    def create_chart(self, item_name: Optional[str] = None, 
-                    output_file: str = "price_chart.html") -> str:
+    def create_chart(self, item_name: Optional[str] = None,
+                    output_file: str = "price_chart.html") -> Optional[str]:
         """
-        Tworzy wykres cen
-        
-        Args:
-            item_name: Nazwa przedmiotu (None = wszystkie przedmioty)
-            output_file: Nazwa pliku wyjściowego
-        
-        Returns:
-            Ścieżka do wygenerowanego pliku
+        Zachowana dla kompatybilności. Wykresy są w interfejsie WWW (Plotly.js).
         """
-        if not self.price_history:
-            logger.warning("Brak danych do wyświetlenia")
-            return None
-        
-        # Filtrujemy dane jeśli podano nazwę przedmiotu
-        filtered_data = self.price_history
-        if item_name:
-            filtered_data = [
-                entry for entry in self.price_history 
-                if item_name.lower() in entry.get('item_name', '').lower()
-            ]
-        
-        if not filtered_data:
-            logger.warning(f"Brak danych dla przedmiotu: {item_name}")
-            return None
-        
-        # Tworzymy DataFrame
-        df = pd.DataFrame(filtered_data)
-        df['datetime'] = pd.to_datetime(df['timestamp'])
-        
-        # Grupujemy po przedmiocie i walucie
-        fig = make_subplots(
-            rows=1, cols=1,
-            subplot_titles=('Historia Cen Ulepszaczy',),
-            specs=[[{"secondary_y": False}]]
-        )
-        
-        # Rysujemy wykresy dla każdego przedmiotu
-        items = df['item_name'].unique()
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-        
-        for idx, item in enumerate(items):
-            item_data = df[df['item_name'] == item].sort_values('datetime')
-            
-            # Dzielimy na yang i won
-            for currency in ['yang', 'won']:
-                currency_data = item_data[item_data['currency'] == currency]
-                if not currency_data.empty:
-                    color = colors[idx % len(colors)]
-                    line_style = '-' if currency == 'yang' else '--'
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=currency_data['datetime'],
-                            y=currency_data['price'],
-                            mode='lines+markers',
-                            name=f"{item} ({currency})",
-                            line=dict(color=color, dash=line_style),
-                            marker=dict(size=4)
-                        ),
-                        row=1, col=1
-                    )
-        
-        # Aktualizujemy layout
-        fig.update_layout(
-            title={
-                'text': 'Historia Cen Ulepszaczy Metin2',
-                'x': 0.5,
-                'xanchor': 'center'
-            },
-            xaxis_title='Data',
-            yaxis_title='Cena',
-            hovermode='x unified',
-            height=600,
-            template='plotly_white',
-            legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=1,
-                xanchor="left",
-                x=1.01
-            )
-        )
-        
-        # Zapisujemy wykres
-        fig.write_html(output_file)
-        logger.info(f"Wykres zapisany do: {output_file}")
-        
-        return output_file
+        logger.info("Wykresy dostępne w interfejsie WWW (http://localhost:5001)")
+        return None
     
     def get_statistics(self, server_id: int) -> Dict:
         """

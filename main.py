@@ -100,9 +100,6 @@ def data_update_worker():
     except Exception as e:
         logger.error(f"Krytyczny błąd w worker thread: {e}", exc_info=True)
     finally:
-        # Zamykamy połączenia
-        if fetcher:
-            fetcher._close_selenium()
         logger.info("Background service zakończony")
 
 
@@ -155,17 +152,16 @@ def main():
         set_chart_manager(chart_manager)
         
         web_port = getattr(config, 'WEB_PORT', 5001)
-        logger.info(f"Web interface dostępny na http://localhost:{web_port}")
-        # Uruchamiamy Flask
-        app.run(debug=False, host='0.0.0.0', port=web_port, use_reloader=False)
+        web_host = getattr(config, 'WEB_HOST', '0.0.0.0')
+        logger.info(f"Web interface dostępny na http://{web_host}:{web_port}")
+        # Uruchamiamy Flask (host '::' = IPv6, '0.0.0.0' = IPv4)
+        app.run(debug=False, host=web_host, port=web_port, use_reloader=False)
         
     except KeyboardInterrupt:
         logger.info("Zatrzymywanie aplikacji...")
     except Exception as e:
         logger.error(f"Błąd uruchamiania web interface: {e}", exc_info=True)
     finally:
-        if fetcher:
-            fetcher._close_selenium()
         logger.info("Aplikacja zakończona")
 
 

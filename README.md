@@ -21,7 +21,7 @@ Aplikacja do monitorowania i wizualizacji cen ulepszaczy z serwera Metin2 Alerts
 pip install -r requirements.txt
 ```
 
-2. Upewnij się, że masz zainstalowany Chrome/Chromium (wymagany dla Selenium)
+2. Dane są pobierane przez HTTP z API (bez przeglądarki)
 
 ## Użycie
 
@@ -65,8 +65,7 @@ Edytuj plik `config.py`, aby dostosować:
 ## Wymagania
 
 - Python 3.7+
-- Chrome/Chromium (dla Selenium - opcjonalne, jeśli API działa)
-- Połączenie z internetem
+- Połączenie z internetem (pobieranie z API metin2alerts.com)
 - Flask (dla web interface)
 
 ## API Endpoints

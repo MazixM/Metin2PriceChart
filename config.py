@@ -26,3 +26,6 @@ TRANSLATION_URL = "https://metin2alerts.com/m2_data/pl/item_names.json"
 # W środowisku chmurowym (Render, Heroku) port jest ustawiany przez zmienną środowiskową PORT
 import os
 WEB_PORT = int(os.environ.get('PORT', 5001))
+
+# Adres nasłuchu: '0.0.0.0' = IPv4, '::' = IPv6 (gdy VPS ma tylko IPv6)
+WEB_HOST = os.environ.get('HOST', '0.0.0.0')
