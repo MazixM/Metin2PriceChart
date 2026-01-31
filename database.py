@@ -283,18 +283,32 @@ class Database:
                         offers_data = []
                         history_data = [] if not skip_legacy else []
                         for item in chunk:
-                            price = None
-                            currency = None
+                            # Łączna cena w won: yang (100M yang = 1 won) + won. Zapis do 5 miejsc po przecinku.
                             yang = item.get('yang', '').replace(',', '').replace('.', '').strip()
-                            won = item.get('won', '').replace(',', '').replace('.', '').strip()
-                            if won and won.isdigit() and int(won) > 0:
-                                price = int(won)
+                            won_raw = item.get('won', '')
+                            won_str = str(won_raw).strip().replace(',', '.') if won_raw not in (None, '') else ''
+                            yang_int = int(yang) if (yang and yang.isdigit()) else 0
+                            won_value = 0.0
+                            if won_str:
+                                try:
+                                    parsed = float(won_str)
+                                    if parsed >= 0:
+                                        won_value = parsed
+                                except (ValueError, TypeError):
+                                    pass
+                            # Yang w won: API może zwracać dwie skale – jedna reguła, bez „lepów”.
+                            # 1) yang >= 1M: pełne yang (100M yang = 1 won) → dziel przez 100M
+                            # 2) yang 1..999999: skala „won×100” (np. 127 = 1,27w) → dziel przez 100
+                            if yang_int >= 1_000_000:
+                                yang_in_won = yang_int / YANG_TO_WON
+                            elif yang_int > 0:
+                                yang_in_won = yang_int / 100.0
+                            else:
+                                yang_in_won = 0.0
+                            price_in_won = round(yang_in_won + won_value, 5)
+                            if price_in_won > 0:
+                                price = price_in_won
                                 currency = 'won'
-                            elif yang and yang.isdigit() and int(yang) > 0:
-                                price = int(yang)
-                                currency = 'yang'
-                            if price is not None and price > 0:
-                                price_in_won = (price / YANG_TO_WON) if currency == 'yang' else price
                                 offers_data.append((
                                     snapshot_id, server_id, item.get('name', 'Unknown'),
                                     price, price_in_won, currency, item.get('quantity', ''), item.get('seller', '')
@@ -433,7 +447,13 @@ class Database:
                     
                     cursor.execute(query, params)
                     rows = cursor.fetchall()
-                    result = [dict(row) for row in rows]
+                    # Jawnie float(price_in_won), żeby JSON nie zwracał 1 zamiast 1.47
+                    result = []
+                    for row in rows:
+                        d = dict(row)
+                        if d.get('price_in_won') is not None:
+                            d['price_in_won'] = float(d['price_in_won'])
+                        result.append(d)
                     
                     return result
                     
@@ -500,21 +520,19 @@ class Database:
                         if item_name not in offers_by_item:
                             offers_by_item[item_name] = []
                         
-                        # Obliczamy cenę per sztukę
+                        # price_in_won w bazie to cena za 1 szt (yang+won), nie dzielimy przez quantity
                         price_in_won = float(offer.get('price_in_won', 0))
                         quantity_str = str(offer.get('quantity', '1')).strip()
                         quantity_clean = ''.join(c for c in quantity_str if c.isdigit())
                         quantity = int(quantity_clean) if quantity_clean else 1
                         if quantity <= 0:
                             quantity = 1
-                        
-                        if price_in_won > 0 and quantity > 0:
-                            price_per_unit = price_in_won / quantity
+                        if price_in_won > 0:
                             offers_by_item[item_name].append({
-                                'price_per_unit': price_per_unit,
+                                'price_per_unit': price_in_won,
                                 'price_in_won': price_in_won,
                                 'quantity': quantity,
-                                'offer': offer  # Zachowujemy oryginalną ofertę dla innych danych
+                                'offer': offer
                             })
                             total_quantity += quantity
                     
@@ -536,11 +554,13 @@ class Database:
                         
                         # Tworzymy agregowany wpis używając oferty z minimalną ceną per sztukę
                         # price_in_won pozostaje ceną za całą ofertę (dla spójności z resztą kodu)
+                        raw_price_in_won = representative_offer.get('price_in_won')
+                        price_in_won_float = float(raw_price_in_won) if raw_price_in_won is not None else 0.0
                         latest_data.append({
                             'item_name': item_name,
                             'timestamp': representative_offer.get('timestamp'),
                             'price': representative_offer.get('price'),
-                            'price_in_won': representative_offer.get('price_in_won'),  # Cena za całą ofertę
+                            'price_in_won': price_in_won_float,  # Zawsze float (np. 1.27, nie 1)
                             'currency': representative_offer.get('currency'),
                             'quantity': representative_offer.get('quantity'),
                             'seller': representative_offer.get('seller'),
@@ -582,10 +602,9 @@ class Database:
             quantity = int(quantity_clean) if quantity_clean else 1
             if quantity <= 0:
                 quantity = 1
-            if price_in_won > 0 and quantity > 0:
-                price_per_unit = price_in_won / quantity
+            if price_in_won > 0:
                 offers_by_item[item_name].append({
-                    'price_per_unit': price_per_unit,
+                    'price_per_unit': price_in_won,
                     'price_in_won': price_in_won,
                     'quantity': quantity,
                     'offer': offer,
@@ -598,11 +617,13 @@ class Database:
             prices_per_unit = [o['price_per_unit'] for o in offers]
             min_offer = min(offers, key=lambda x: x['price_per_unit'])
             rep = min_offer['offer']
+            raw_piw = rep.get('price_in_won')
+            price_in_won_float = float(raw_piw) if raw_piw is not None else 0.0
             latest_data.append({
                 'item_name': item_name,
                 'timestamp': rep.get('timestamp'),
                 'price': rep.get('price'),
-                'price_in_won': rep.get('price_in_won'),
+                'price_in_won': price_in_won_float,
                 'currency': rep.get('currency'),
                 'quantity': rep.get('quantity'),
                 'seller': rep.get('seller'),
@@ -780,9 +801,9 @@ class Database:
             
             stats = {}
             for row in cursor.fetchall():
-                # Pobieramy najnowszą cenę dla każdego przedmiotu z najnowszego snapshot
+                # Pobieramy najnowszą ofertę (price_in_won + quantity) i liczymy cenę ZA 1 SZT
                 cursor.execute("""
-                    SELECT o.price_in_won
+                    SELECT o.price_in_won, o.quantity
                     FROM offers o
                     INNER JOIN snapshots s ON o.snapshot_id = s.id
                     WHERE o.item_name = ? 
@@ -793,27 +814,28 @@ class Database:
                 """, (row['item_name'], server_id))
                 
                 current_row = cursor.fetchone()
-                current_price = float(current_row['price_in_won']) if current_row else None
+                current_price = None
+                if current_row:
+                    current_price = float(current_row['price_in_won'])
                 
                 stats[row['item_name']] = {
                     'min_price': float(row['min_price']) if row['min_price'] is not None else 0.0,
                     'max_price': float(row['max_price']) if row['max_price'] is not None else 0.0,
                     'avg_price': float(row['avg_price']) if row['avg_price'] is not None else 0.0,
                     'data_points': row['data_points'],
-                    'current_price': current_price
+                    'current_price': float(current_price) if current_price is not None else None
                 }
             
             return stats
     
-    def get_item_statistics(self, item_name: str, server_id: int, use_full_history: bool = True) -> Optional[Dict]:
+    def get_item_statistics(self, item_name: str, server_id: int, use_full_history: bool = False) -> Optional[Dict]:
         """
-        Zwraca statystyki dla konkretnego przedmiotu używając agregacji po stronie bazy danych
-        (znacznie szybsze niż pobieranie wszystkich danych)
+        Zwraca statystyki cen dla przedmiotu z NAJNOWSZYCH danych (ostatni snapshot).
         
         Args:
             item_name: Nazwa przedmiotu
             server_id: ID serwera (np. 426, 702)
-            use_full_history: Jeśli True, używa ostatnich 90 dni dla statystyk
+            use_full_history: Nieużywane – statystyki zawsze z ostatniego snapshotu
         
         Returns:
             Dict ze statystykami lub None jeśli brak danych
@@ -821,44 +843,45 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
-            # OPTYMALIZACJA: Używamy agregacji SQL zamiast pobierania wszystkich danych
-            days_filter = 90 if use_full_history else 30
-            from datetime import datetime, timedelta
-            cutoff_date = datetime.now() - timedelta(days=days_filter)
-            cutoff_timestamp = cutoff_date.isoformat()
+            # Statystyki tylko z ostatniego snapshotu (najnowsze ceny)
+            cursor.execute("""
+                SELECT id FROM snapshots
+                WHERE server_id = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (server_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            snapshot_id = row['id']
             
-            # WAŻNE: Obliczamy statystyki z CEN PER SZTUKĘ, nie z cen całkowitych
-            # Pobieramy wszystkie oferty z ceną per sztukę dla danego serwera
             cursor.execute("""
                 SELECT 
                     o.price_in_won,
                     CAST(REPLACE(REPLACE(o.quantity, ',', ''), ' ', '') AS INTEGER) as qty
                 FROM offers o
-                INNER JOIN snapshots s ON o.snapshot_id = s.id
-                WHERE o.item_name = ?
+                WHERE o.snapshot_id = ?
+                AND o.item_name = ?
                 AND o.server_id = ?
                 AND o.price_in_won > 0
-                AND s.timestamp >= ?
-            """, (item_name, server_id, cutoff_timestamp))
+            """, (snapshot_id, item_name, server_id))
             
             rows = cursor.fetchall()
             
             if not rows:
                 return None
             
-            # Obliczamy cenę per sztukę dla każdej oferty
             prices_per_unit = []
             total_quantity = 0
             
             for row in rows:
                 price_in_won = float(row['price_in_won'])
                 quantity = int(row['qty']) if row['qty'] and row['qty'] > 0 else 1
-                
-                if quantity > 0:
-                    price_per_unit = price_in_won / quantity
-                    if price_per_unit > 0:
-                        prices_per_unit.append(price_per_unit)
-                        total_quantity += quantity
+                if quantity <= 0:
+                    quantity = 1
+                if price_in_won > 0:
+                    prices_per_unit.append(price_in_won)
+                    total_quantity += quantity
             
             if not prices_per_unit:
                 return None
@@ -921,3 +944,31 @@ class Database:
         
         logger.info(f"Usunięto {deleted_count} starych wpisów (starszych niż {days_to_keep} dni)")
         return deleted_count
+    
+    def cleanup_invalid_price_records(self, max_valid_min_price: float = 0.01) -> int:
+        """
+        Usuwa rekordy zapisane błędnie (stara logika: małe yang dzielone przez 100M → ~0).
+        Jednorazowa korekta danych – wywołaj raz po poprawce parsowania yang.
+        
+        Args:
+            max_valid_min_price: Oferty z price_in_won w (0, max_valid_min_price) uznawane za błędne.
+        
+        Returns:
+            Liczba usuniętych rekordów (offers + price_history).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM offers
+                WHERE price_in_won > 0 AND price_in_won < ?
+            """, (max_valid_min_price,))
+            deleted_offers = cursor.rowcount
+            cursor.execute("""
+                DELETE FROM price_history
+                WHERE price_in_won > 0 AND price_in_won < ?
+            """, (max_valid_min_price,))
+            deleted_history = cursor.rowcount
+            conn.commit()
+        total = deleted_offers + deleted_history
+        logger.info(f"Usunięto błędne rekordy: {deleted_offers} ofert, {deleted_history} price_history (łącznie {total})")
+        return total

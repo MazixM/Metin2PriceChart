@@ -368,7 +368,7 @@
         let isSearchMode = false;
         let cachedSearchData = []; // Wyniki wyszukiwania (już z cenami) – paginacja po stronie klienta
         
-        // Funkcja formatowania ceny w won do formatu "X,XXw"
+        // Cena w won: 2 miejsca domyślnie (1,40w); 5 miejsc tylko gdy są znaczące (0,123 lub 1,12345). Bez zbędnych zer.
         function formatPriceInWon(priceInWon) {
             if (priceInWon === null || priceInWon === undefined || isNaN(priceInWon)) {
                 return '-';
@@ -377,7 +377,13 @@
             if (isNaN(num) || num === 0) {
                 return '-';
             }
-            return num.toFixed(2).replace('.', ',') + 'w';
+            const s5 = num.toFixed(5);
+            const after2 = s5.slice(-3);
+            const hasPrecisionBeyond2 = after2 !== '000';
+            const formatted = hasPrecisionBeyond2
+                ? s5.replace(/0+$/, '')
+                : num.toFixed(2);
+            return formatted.replace('.', ',') + 'w';
         }
         
         // Funkcja ustawiania typu ceny
@@ -593,12 +599,8 @@
                 }
             }
             if (typeof priceInWon === 'string') priceInWon = parseFloat(priceInWon) || 0;
-            let quantity = 1;
-            const quantityStr = String(item.quantity || '1').trim();
-            const quantityClean = quantityStr.replace(/\D/g, '');
-            quantity = parseInt(quantityClean) || 1;
-            if (quantity <= 0) quantity = 1;
-            const pricePerUnit = priceInWon > 0 ? priceInWon / quantity : 0;
+            // price_in_won w API to już cena za 1 szt (yang+won), nie dzielimy przez quantity
+            const pricePerUnit = priceInWon > 0 ? priceInWon : 0;
             const priceFor200 = pricePerUnit * 200;
             const formattedPrice = formatPriceInWon(pricePerUnit);
             const formattedPrice200 = formatPriceInWon(priceFor200);
@@ -738,7 +740,7 @@
                     if (data.limit_applied) {
                         const info = document.createElement('div');
                         info.style.cssText = 'text-align: center; color: #666; font-size: 12px; margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;';
-                        info.textContent = `Wyświetlono ${data.history.length} wpisów (ostatnie 30 dni). Statystyki obliczone z pełnej historii.`;
+                        info.textContent = `Wyświetlono ${data.history.length} wpisów (ostatnie 30 dni). Statystyki z najnowszych cen (ostatni odczyt).`;
                         const chartWrapper = document.querySelector('.chart-wrapper');
                         if (chartWrapper && !chartWrapper.querySelector('.data-limit-info')) {
                             info.className = 'data-limit-info';
@@ -765,7 +767,7 @@
                 intervalMinutes = 60; // 1 godzina dla bardzo dużych zbiorów
             }
             
-            // Konwertujemy wszystkie ceny do won PER SZTUKA i sortujemy
+            // price_in_won w API to już cena za 1 szt (yang+won), nie dzielimy przez quantity
             const normalizedHistory = history.map(h => {
                 let priceInWon = h.price_in_won;
                 if (!priceInWon) {
@@ -775,16 +777,7 @@
                         priceInWon = h.price;
                     }
                 }
-                
-                // WAŻNE: Dzielimy cenę przez quantity (per sztuka)
-                let quantity = 1;
-                const quantityStr = String(h.quantity || '1').trim();
-                const quantityClean = quantityStr.replace(/\D/g, ''); // Usuwamy wszystko oprócz cyfr
-                quantity = parseInt(quantityClean) || 1;
-                if (quantity <= 0) quantity = 1;
-                
-                const pricePerUnit = parseFloat(priceInWon) / quantity;
-                
+                const pricePerUnit = parseFloat(priceInWon) || 0;
                 return {
                     ...h,
                     price_in_won: pricePerUnit,
@@ -895,8 +888,7 @@
                 statsPanel.style.display = 'none';
             }
             
-            // NAJPIERW: Obliczamy zakres Y z surowych danych (przed agregacją)
-            // To zapewnia, że nie tracimy różnic podczas agregacji
+            // price_in_won w API to już cena za 1 szt (yang+won), nie dzielimy przez quantity
             const rawPrices = [];
             history.forEach(h => {
                 let priceInWon = h.price_in_won;
@@ -907,15 +899,7 @@
                         priceInWon = h.price;
                     }
                 }
-                
-                // Dzielimy przez quantity (per sztuka)
-                let quantity = 1;
-                const quantityStr = String(h.quantity || '1').trim();
-                const quantityClean = quantityStr.replace(/\D/g, '');
-                quantity = parseInt(quantityClean) || 1;
-                if (quantity <= 0) quantity = 1;
-                
-                const pricePerUnit = parseFloat(priceInWon) / quantity;
+                const pricePerUnit = parseFloat(priceInWon) || 0;
                 if (pricePerUnit > 0) {
                     rawPrices.push(pricePerUnit);
                 }
@@ -1165,15 +1149,20 @@
                 container.innerHTML = '<div class="no-data">Brak statystyk</div>';
                 return;
             }
-            
-            const minPrice = statistics.min_price || 0;
-            const maxPrice = statistics.max_price || 0;
-            const avgPrice = statistics.avg_price || 0;
-            const medianPrice = statistics.median_price || 0;
-            const minPrice200 = statistics.min_price_200 || 0;
-            const maxPrice200 = statistics.max_price_200 || 0;
-            const avgPrice200 = statistics.avg_price_200 || 0;
-            const medianPrice200 = statistics.median_price_200 || 0;
+            // Jawnie liczby z API (snake_case); fallback na camelCase
+            const num = (key) => {
+                const v = statistics[key] ?? statistics[key.replace(/_(\w)/g, (_, c) => c.toUpperCase())];
+                const n = Number(v);
+                return Number.isFinite(n) ? n : 0;
+            };
+            const minPrice = num('min_price');
+            const maxPrice = num('max_price');
+            const avgPrice = num('avg_price');
+            const medianPrice = num('median_price');
+            const minPrice200 = num('min_price_200');
+            const maxPrice200 = num('max_price_200');
+            const avgPrice200 = num('avg_price_200');
+            const medianPrice200 = num('median_price_200');
             
             let html = `
                 <div class="stat-group">
