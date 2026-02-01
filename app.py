@@ -27,6 +27,10 @@ _chart_manager_instance = None
 # Cache dla logowania Steam GSI (aby nie logować każdego żądania)
 _steam_gsi_logged = False
 
+# Cache snapshotu (server_id -> (timestamp_cached, data)) – TTL 60s, minimalne obciążenie bazy
+_snapshot_cache = {}
+_snapshot_cache_ttl_sec = 60
+
 def get_chart_manager():
     """Zwraca globalną instancję chart_manager"""
     global _chart_manager_instance
@@ -101,6 +105,30 @@ def get_servers():
     """Zwraca listę dostępnych serwerów"""
     return jsonify({'servers': config.AVAILABLE_SERVERS, 'default': config.DEFAULT_SERVER_ID})
 
+@app.route('/api/snapshot/latest')
+def get_snapshot_latest():
+    """
+    Zwraca surowe oferty z ostatniego snapshotu (jeden SELECT, bez agregacji).
+    Klient robi grupowanie, wyszukiwanie, paginację – serwer/baza minimalnie obciążone.
+    Cache w pamięci (TTL 60s) – powtarzające się żądania nie idą do bazy.
+    """
+    import time
+    server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
+    now = time.time()
+    cached = _snapshot_cache.get(server_id)
+    if cached and (now - cached[0]) < _snapshot_cache_ttl_sec:
+        return jsonify(cached[1])
+    cm = get_chart_manager()
+    offers, snapshot_timestamp = cm.db.get_latest_snapshot_offers_raw(server_id)
+    payload = {
+        'offers': offers,
+        'last_update': snapshot_timestamp,
+        'server_id': server_id,
+    }
+    _snapshot_cache[server_id] = (now, payload)
+    return jsonify(payload)
+
+
 @app.route('/api/items')
 def get_items():
     """Zwraca listę wszystkich unikalnych przedmiotów dla danego serwera"""
@@ -112,42 +140,28 @@ def get_items():
 
 @app.route('/api/item/<item_name>')
 def get_item_history(item_name):
-    """Zwraca historię cen dla konkretnego przedmiotu z znormalizowanymi cenami w won oraz statystykami"""
+    """
+    Zwraca tylko historię cen dla przedmiotu (jeden SELECT).
+    Statystyki (min/max/śr/mediana) liczy klient z historii – bez drugiego zapytania do bazy.
+    """
     from urllib.parse import unquote
     cm = get_chart_manager()
-    
-    # Dekodujemy nazwę przedmiotu z URL
     item_name = unquote(item_name)
-    
-    # Pobieramy parametry z query string
     server_id = request.args.get('server_id', type=int, default=config.DEFAULT_SERVER_ID)
     limit = request.args.get('limit', type=int)
     days = request.args.get('days', type=int)
-    
-    # Domyślnie ograniczamy do ostatnich 30 dni lub 5000 wpisów dla wydajności
     if not limit and not days:
-        days = 30  # Domyślnie ostatnie 30 dni
-    
-    # Dla wydajności - maksymalny limit 10000 wpisów
+        days = 30
     if limit and limit > 10000:
         limit = 10000
-    
     history = cm.db.get_item_history(item_name, server_id, limit=limit, days=days)
-    
     if not history:
         return jsonify({'history': [], 'message': 'Brak danych', 'server_id': server_id})
-    
-    # Pobieramy statystyki z bazy danych (używamy ostatnich 90 dni dla statystyk - szybciej)
-    stats = cm.db.get_item_statistics(item_name, server_id, use_full_history=True)
-    total_quantity = stats['total_quantity'] if stats else 0
-    
     return jsonify({
         'item_name': item_name,
         'server_id': server_id,
         'history': history,
         'count': len(history),
-        'statistics': stats,
-        'total_quantity': total_quantity,
         'limit_applied': limit is not None or days is not None
     })
 

@@ -471,6 +471,39 @@ class Database:
         
         return []
     
+    def get_latest_snapshot_offers_raw(self, server_id: int) -> tuple[List[Dict], Optional[str]]:
+        """
+        Zwraca surowe oferty z ostatniego snapshotu (jeden SELECT, bez agregacji).
+        Agregacja/grupowanie po stronie klienta – minimalne obciążenie serwera/bazy.
+        
+        Returns:
+            (lista ofert: item_name, price_in_won, quantity, seller, timestamp), timestamp snapshotu lub None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, timestamp FROM snapshots WHERE server_id = ? ORDER BY timestamp DESC LIMIT 1",
+                (server_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return [], None
+            snapshot_id = row['id']
+            snapshot_timestamp = row['timestamp']
+            cursor.execute("""
+                SELECT o.item_name, o.price_in_won, o.quantity, o.seller, s.timestamp
+                FROM offers o
+                INNER JOIN snapshots s ON o.snapshot_id = s.id
+                WHERE o.snapshot_id = ? AND o.server_id = ? AND o.price_in_won > 0
+            """, (snapshot_id, server_id))
+            offers = []
+            for r in cursor.fetchall():
+                d = dict(r)
+                if d.get('price_in_won') is not None:
+                    d['price_in_won'] = float(d['price_in_won'])
+                offers.append(d)
+            return offers, snapshot_timestamp
+    
     def get_latest_data(self, server_id: int) -> tuple[List[Dict], int]:
         """
         Zwraca najnowsze dane dla wszystkich przedmiotów używając zoptymalizowanej struktury snapshotów

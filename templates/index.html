@@ -301,9 +301,8 @@
         </div>
         
         <div class="search-section">
-            <input type="text" id="searchInput" class="search-box" placeholder="Wpisz nazwę przedmiotu do wyszukania...">
-            <button class="btn" onclick="searchItems()">Szukaj</button>
-            <button class="btn btn-secondary" onclick="loadAllItems()">Pokaż wszystkie</button>
+            <input type="text" id="searchInput" class="search-box" placeholder="Wpisz nazwę przedmiotu (wyszukiwanie na żywo)...">
+            <button class="btn btn-secondary" onclick="clearSearch()">Wyczyść</button>
         </div>
         
         <div class="price-type-selector" id="priceTypeSelector" style="margin-bottom: 20px; text-align: center; display: none;">
@@ -311,14 +310,6 @@
             <button id="btnMin" class="btn price-type-btn active" onclick="setPriceType('min')">Minimalna</button>
             <button id="btnMax" class="btn price-type-btn" onclick="setPriceType('max')">Maksymalna</button>
             <button id="btnAvg" class="btn price-type-btn" onclick="setPriceType('avg')">Średnia</button>
-        </div>
-        
-        <div style="text-align: center; margin-bottom: 15px; font-size: 12px; color: #666;">
-            <label>
-                <input type="checkbox" id="autoRefreshCheckbox" checked style="margin-right: 5px;">
-                Automatyczne odświeżanie (co 30 sekund)
-            </label>
-            <span id="refreshStatus" style="margin-left: 15px;"></span>
         </div>
         
         <div id="statsBar" class="stats-bar" style="display: none;">
@@ -336,7 +327,7 @@
             </div>
         </div>
         
-        <div id="itemsContainer" class="items-grid"></div>
+        <div id="itemsContainer" class="items-grid"><div class="loading">Ładowanie listy...</div></div>
         <div id="paginationBar" style="display: none; text-align: center; margin: 20px 0;">
             <button type="button" class="btn" id="loadMoreBtn" onclick="loadMoreItems()">Załaduj więcej</button>
             <span id="paginationInfo" style="margin-left: 15px; color: #666; font-size: 14px;"></span>
@@ -358,15 +349,73 @@
     <script>
         const PAGE_SIZE = 10;
         let selectedItem = null;
-        let allItems = [];
+        let allItems = [];       // Pełna lista przedmiotów z ostatniego snapshotu (po stronie klienta)
         let currentPriceType = 'min';
-        let autoRefreshInterval = null;
+        let searchDebounceTimer = null;
+        const SEARCH_DEBOUNCE_MS = 300;
         let currentServerId = 426;
         let availableServers = {};
         let listOffset = 0;
         let listTotalCount = 0;
         let isSearchMode = false;
-        let cachedSearchData = []; // Wyniki wyszukiwania (już z cenami) – paginacja po stronie klienta
+        let cachedSearchData = [];
+        let snapshotTotalQuantity = 0;
+        
+        // Z surowych ofert buduje listę przedmiotów (grupowanie po stronie klienta – bez serwera)
+        function buildItemsFromOffers(offers) {
+            if (!offers || !offers.length) return { items: [], total_quantity: 0 };
+            const byName = {};
+            let totalQty = 0;
+            for (const o of offers) {
+                const name = o.item_name || 'Unknown';
+                const price = parseFloat(o.price_in_won) || 0;
+                const qty = Math.max(1, parseInt(String(o.quantity).replace(/\D/g, '') || '1', 10));
+                if (price <= 0) continue;
+                totalQty += qty;
+                if (!byName[name] || price < byName[name].price_in_won) {
+                    byName[name] = {
+                        item_name: name,
+                        price_in_won: price,
+                        quantity: o.quantity,
+                        seller: o.seller || '-',
+                        timestamp: o.timestamp
+                    };
+                }
+            }
+            const items = Object.values(byName).sort((a, b) => (a.item_name || '').localeCompare(b.item_name || ''));
+            return { items, total_quantity: totalQty };
+        }
+        
+        // Statystyki z historii cen – liczone po stronie klienta (bez drugiego zapytania do bazy).
+        function computeStatsFromHistory(history) {
+            if (!history || history.length === 0) {
+                return { min_price: 0, max_price: 0, avg_price: 0, median_price: 0,
+                    min_price_200: 0, max_price_200: 0, avg_price_200: 0, median_price_200: 0,
+                    total_quantity: 0, total_offers: 0 };
+            }
+            const prices = history.map(h => parseFloat(h.price_in_won) || 0).filter(p => p > 0);
+            if (prices.length === 0) return { min_price: 0, max_price: 0, avg_price: 0, median_price: 0,
+                min_price_200: 0, max_price_200: 0, avg_price_200: 0, median_price_200: 0,
+                total_quantity: 0, total_offers: history.length };
+            const min_price = Math.min(...prices);
+            const max_price = Math.max(...prices);
+            const sum = prices.reduce((a, b) => a + b, 0);
+            const avg_price = sum / prices.length;
+            const sorted = [...prices].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            const median_price = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+            let total_quantity = 0;
+            history.forEach(h => {
+                const q = parseInt(String(h.quantity || '1').replace(/\D/g, '') || '1', 10);
+                total_quantity += Math.max(1, q);
+            });
+            return {
+                min_price, max_price, avg_price, median_price,
+                min_price_200: min_price * 200, max_price_200: max_price * 200,
+                avg_price_200: avg_price * 200, median_price_200: median_price * 200,
+                total_quantity, total_offers: history.length
+            };
+        }
         
         // Cena w won: 2 miejsca domyślnie (1,40w); 5 miejsc tylko gdy są znaczące (0,123 lub 1,12345). Bez zbędnych zer.
         function formatPriceInWon(priceInWon) {
@@ -402,50 +451,59 @@
             }
         }
         
-        // Funkcja do włączania/wyłączania automatycznego odświeżania
-        function setupAutoRefresh() {
-            const checkbox = document.getElementById('autoRefreshCheckbox');
-            const statusSpan = document.getElementById('refreshStatus');
-            
-            // Usuwamy istniejący interwał jeśli jest
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            }
-            
-            // Ustawiamy nowy interwał jeśli checkbox jest zaznaczony
-            if (checkbox.checked) {
-                statusSpan.textContent = 'Aktywne';
-                statusSpan.style.color = '#28a745';
-                
-                autoRefreshInterval = setInterval(() => {
-                    loadAllItems();
-                    // Pokazujemy krótki wskaźnik odświeżania
-                    statusSpan.textContent = 'Odświeżono: ' + new Date().toLocaleTimeString('pl-PL');
-                    setTimeout(() => {
-                        if (checkbox.checked) {
-                            statusSpan.textContent = 'Aktywne';
-                        }
-                    }, 2000);
-                }, 30000); // Co 30 sekund
+        // Wyszukiwanie na żywo – filtruje allItems po bieżącej treści pola (z opóźnieniem 0,3 s).
+        function applySearchFilter() {
+            const query = document.getElementById('searchInput').value.trim().toLowerCase();
+            listOffset = 0;
+            if (!query) {
+                isSearchMode = false;
+                cachedSearchData = [];
+                if (allItems.length === 0) return;
+                listTotalCount = allItems.length;
+                const firstPage = allItems.slice(0, PAGE_SIZE);
+                displayItems(firstPage);
+                listOffset = firstPage.length;
+                updatePagination(listTotalCount, listOffset, snapshotTotalQuantity);
+                updateStats(listTotalCount, null, snapshotTotalQuantity);
             } else {
-                statusSpan.textContent = 'Wyłączone';
-                statusSpan.style.color = '#dc3545';
+                if (allItems.length === 0) return;
+                const filtered = allItems.filter(item => (item.item_name || '').toLowerCase().includes(query));
+                isSearchMode = true;
+                cachedSearchData = filtered;
+                listTotalCount = filtered.length;
+                if (filtered.length === 0) {
+                    document.getElementById('itemsContainer').innerHTML =
+                        '<div class="no-data">Brak przedmiotów pasujących do wyszukania.</div>';
+                    hidePagination();
+                    updateStats(0, null, null);
+                } else {
+                    const firstPage = filtered.slice(0, PAGE_SIZE);
+                    displayItems(firstPage);
+                    listOffset = firstPage.length;
+                    updatePagination(filtered.length, listOffset, null);
+                    updateStats(filtered.length, null, null);
+                    document.getElementById('loadMoreBtn').style.display = listOffset >= filtered.length ? 'none' : 'inline-block';
+                }
             }
+        }
+        
+        function clearSearch() {
+            document.getElementById('searchInput').value = '';
+            applySearchFilter();
         }
         
         // Funkcja obsługująca zmianę serwera
         function onServerChange() {
             const serverSelect = document.getElementById('serverSelect');
             currentServerId = parseInt(serverSelect.value);
+            document.getElementById('searchInput').value = '';
             
             // Resetujemy wybór przedmiotu
             selectedItem = null;
-            document.getElementById('itemsContainer').style.display = 'grid';  // grid = kafelki, nie 'block' (lista)
+            document.getElementById('itemsContainer').style.display = 'grid';
             document.getElementById('chartContainer').style.display = 'none';
             document.getElementById('priceTypeSelector').style.display = 'none';
             
-            // Przeładowujemy dane dla nowego serwera
             loadAllItems();
         }
         
@@ -474,26 +532,16 @@
             }
         }
         
-        // Ładowanie danych przy starcie
-        window.addEventListener('DOMContentLoaded', async () => {
-            // Najpierw ładujemy listę serwerów
-            await loadServers();
-            
-            // Potem ładujemy dane
+        // Strona startuje od razu – szkielet + "Ładowanie listy..."; dane ładują się w tle.
+        window.addEventListener('DOMContentLoaded', () => {
+            // Od razu wiążemy wyszukiwanie (bez czekania na API)
+            document.getElementById('searchInput').addEventListener('input', () => {
+                if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+                searchDebounceTimer = setTimeout(applySearchFilter, SEARCH_DEBOUNCE_MS);
+            });
+            // Serwery i lista w tle – nie blokują pierwszego rysowania
+            loadServers();
             loadAllItems();
-            
-            // Ustawiamy automatyczne odświeżanie
-            setupAutoRefresh();
-            
-            // Nasłuchujemy zmian checkboxa
-            document.getElementById('autoRefreshCheckbox').addEventListener('change', setupAutoRefresh);
-        });
-        
-        // Wyszukiwanie po Enter
-        document.getElementById('searchInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                searchItems();
-            }
         });
         
         async function loadAllItems() {
@@ -502,13 +550,19 @@
                 isSearchMode = false;
                 cachedSearchData = [];
                 listOffset = 0;
-                const response = await fetch(`/api/latest?server_id=${currentServerId}&limit=${PAGE_SIZE}&offset=0`);
+                const response = await fetch(`/api/snapshot/latest?server_id=${currentServerId}`);
                 const data = await response.json();
-                if (data.data && data.data.length > 0) {
-                    listTotalCount = data.total_count !== undefined ? data.total_count : data.data.length;
-                    displayItems(data.data);
-                    updatePagination(listTotalCount, data.data.length, data.total_quantity);
-                    updateStats(listTotalCount, null, data.total_quantity || 0);
+                const offers = data.offers || [];
+                const { items, total_quantity } = buildItemsFromOffers(offers);
+                allItems = items;
+                snapshotTotalQuantity = total_quantity;
+                if (allItems.length > 0) {
+                    listTotalCount = allItems.length;
+                    const firstPage = allItems.slice(0, PAGE_SIZE);
+                    displayItems(firstPage);
+                    listOffset = firstPage.length;
+                    updatePagination(listTotalCount, listOffset, snapshotTotalQuantity);
+                    updateStats(listTotalCount, null, snapshotTotalQuantity);
                     if (data.last_update) {
                         document.getElementById('lastUpdate').textContent =
                             `Ostatnia aktualizacja: ${new Date(data.last_update).toLocaleString('pl-PL')}`;
@@ -516,7 +570,7 @@
                 } else {
                     listTotalCount = 0;
                     hidePagination();
-                    const message = data.message || 'Brak danych. Poczekaj na pierwszą aktualizację (może potrwać do 5 minut).';
+                    const message = (offers.length === 0) ? 'Brak danych. Poczekaj na pierwszą aktualizację (może potrwać do 5 minut).' : 'Brak ofert do wyświetlenia.';
                     document.getElementById('itemsContainer').innerHTML =
                         `<div class="no-data">${message}<br><small>Worker pobiera dane co 5 minut dla wszystkich serwerów.</small></div>`;
                 }
@@ -529,7 +583,7 @@
             }
         }
         
-        async function loadMoreItems() {
+        function loadMoreItems() {
             if (isSearchMode) {
                 const from = listOffset;
                 const slice = cachedSearchData.slice(from, from + PAGE_SIZE);
@@ -542,20 +596,14 @@
                 }
                 return;
             }
-            try {
-                const offset = document.getElementById('itemsContainer').querySelectorAll('.item-card').length;
-                const response = await fetch(`/api/latest?server_id=${currentServerId}&limit=${PAGE_SIZE}&offset=${offset}`);
-                const data = await response.json();
-                if (data.data && data.data.length > 0) {
-                    appendItems(data.data);
-                    listOffset = offset + data.data.length;
-                    updatePagination(listTotalCount, listOffset, null);
-                    if (listOffset >= listTotalCount) {
-                        document.getElementById('loadMoreBtn').style.display = 'none';
-                    }
-                }
-            } catch (error) {
-                console.error('Błąd ładowania kolejnych danych:', error);
+            const from = listOffset;
+            const slice = allItems.slice(from, from + PAGE_SIZE);
+            if (slice.length === 0) return;
+            appendItems(slice);
+            listOffset += slice.length;
+            updatePagination(listTotalCount, listOffset, null);
+            if (listOffset >= listTotalCount) {
+                document.getElementById('loadMoreBtn').style.display = 'none';
             }
         }
         
@@ -616,45 +664,6 @@
             return card;
         }
         
-        async function searchItems() {
-            const query = document.getElementById('searchInput').value.trim();
-            if (!query) {
-                loadAllItems();
-                return;
-            }
-            try {
-                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&server_id=${currentServerId}`);
-                const data = await response.json();
-                if (!data.items || data.items.length === 0) {
-                    document.getElementById('itemsContainer').innerHTML =
-                        '<div class="no-data">Nie znaleziono przedmiotów pasujących do wyszukiwania.</div>';
-                    hidePagination();
-                    return;
-                }
-                const names = data.items;
-                const itemsParam = names.map(n => encodeURIComponent(n)).join(',');
-                const latestResponse = await fetch(`/api/latest?server_id=${currentServerId}&items=${itemsParam}`);
-                const latestData = await latestResponse.json();
-                if (!latestData.data || latestData.data.length === 0) {
-                    document.getElementById('itemsContainer').innerHTML =
-                        '<div class="no-data">Brak aktualnych cen dla znalezionych przedmiotów.</div>';
-                    hidePagination();
-                    return;
-                }
-                isSearchMode = true;
-                cachedSearchData = latestData.data;
-                listOffset = 0;
-                const firstPage = cachedSearchData.slice(0, PAGE_SIZE);
-                displayItems(firstPage);
-                listOffset = firstPage.length;
-                listTotalCount = cachedSearchData.length;
-                updatePagination(cachedSearchData.length, listOffset, latestData.total_quantity);
-                updateStats(cachedSearchData.length, null, latestData.total_quantity || 0);
-            } catch (error) {
-                console.error('Błąd wyszukiwania:', error);
-            }
-        }
-        
         function displayItems(items) {
             const container = document.getElementById('itemsContainer');
             container.innerHTML = '';
@@ -707,40 +716,27 @@
         
         async function loadItemHistory(itemName) {
             try {
-                // Pokazujemy wskaźnik ładowania
                 const chartContainer = document.getElementById('chartContainer');
                 chartContainer.style.display = 'flex';
                 chartContainer.innerHTML = '<div class="loading">Ładowanie danych...</div>';
                 
-                const response = await fetch(`/api/item/${encodeURIComponent(itemName)}?server_id=${currentServerId}`);
+                const response = await fetch(`/api/item/${encodeURIComponent(itemName)}?server_id=${currentServerId}&days=30`);
                 const data = await response.json();
                 
                 if (data.history && data.history.length > 0) {
-                    // Używamy statystyk z API lub obliczamy na podstawie wybranego typu
+                    const statistics = computeStatsFromHistory(data.history);
                     let priceInWon = null;
-                    if (data.statistics) {
-                        if (currentPriceType === 'min') {
-                            priceInWon = data.statistics.min_price;
-                        } else if (currentPriceType === 'max') {
-                            priceInWon = data.statistics.max_price;
-                        } else if (currentPriceType === 'avg') {
-                            priceInWon = data.statistics.avg_price;
-                        }
-                    }
+                    if (currentPriceType === 'min') priceInWon = statistics.min_price;
+                    else if (currentPriceType === 'max') priceInWon = statistics.max_price;
+                    else if (currentPriceType === 'avg') priceInWon = statistics.avg_price;
                     
-                    // Aktualizujemy wykres z historią
-                    displayChart(data.history, itemName, priceInWon, data.statistics);
-                    // Używamy total_quantity jeśli dostępne (z statystyk lub bezpośrednio z odpowiedzi)
-                    const availableQuantity = (data.statistics && data.statistics.total_quantity !== undefined) 
-                        ? data.statistics.total_quantity 
-                        : (data.total_quantity !== undefined ? data.total_quantity : data.history.length);
-                    updateStats(null, itemName, availableQuantity);
+                    displayChart(data.history, itemName, priceInWon, statistics);
+                    updateStats(null, itemName, statistics.total_quantity || data.history.length);
                     
-                    // Informacja o ograniczeniu danych jeśli zastosowano
                     if (data.limit_applied) {
                         const info = document.createElement('div');
                         info.style.cssText = 'text-align: center; color: #666; font-size: 12px; margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;';
-                        info.textContent = `Wyświetlono ${data.history.length} wpisów (ostatnie 30 dni). Statystyki z najnowszych cen (ostatni odczyt).`;
+                        info.textContent = `Wyświetlono ${data.history.length} wpisów (ostatnie 30 dni). Statystyki obliczone po stronie klienta.`;
                         const chartWrapper = document.querySelector('.chart-wrapper');
                         if (chartWrapper && !chartWrapper.querySelector('.data-limit-info')) {
                             info.className = 'data-limit-info';
